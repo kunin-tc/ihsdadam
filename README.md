@@ -1,3 +1,4 @@
+<<<<<<< HEAD
 # IHSDadaM
 
 **I**nteractive **H**ighway **S**afety **D**esign Model - **Data** **M**anager
@@ -78,3 +79,6 @@ Developed by Adam Engbring (aengbring@hntb.com)
 ## Support
 
 For bug reports and feature requests, please open an issue on GitHub.
+=======
+# ihsdadam
+>>>>>>> 6cb69daeb44d9368cb1640eb3c2b988c7d01a94c
