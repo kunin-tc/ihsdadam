@@ -89,7 +89,7 @@ class IHSDMWisconsinHelper:
 
     def __init__(self):
         self.root = tk.Tk()
-        self.root.title("IHSDadaM v1.0")
+        self.root.title(f"{__app_name__} v{__version__}")
         self.root.geometry("1400x800")
 
         # Set color scheme
@@ -300,6 +300,11 @@ class IHSDMWisconsinHelper:
         self.visual_tab = ttk.Frame(self.notebook)
         self.notebook.add(self.visual_tab, text="  Visual View  ")
         self.setup_visual_tab()
+
+        # Tab 5: CMF Scanner
+        self.cmf_tab = ttk.Frame(self.notebook)
+        self.notebook.add(self.cmf_tab, text="  CMF Scanner  ")
+        self.setup_cmf_tab()
 
         # Configure grid weights
         main_frame.columnconfigure(0, weight=1)
@@ -1040,7 +1045,7 @@ View horizontal and vertical alignment profiles for any highway alignment in you
         summary = f"Total: {len(self.messages)} | "
         summary += f"Highways: {len(highway_alignments)} | "
         summary += f"Intersections: {len(intersection_alignments)} | "
-        summary += f"Ramps: {len(ramp_alignments)} | "
+        summary += f"Ramp Terminals: {len(ramp_alignments)} | "
 
         if type_counts['CRITICAL'] > 0:
             summary += f"CRITICAL: {type_counts['CRITICAL']} | "
@@ -2515,6 +2520,318 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                              font=('Consolas', 9), fill=border)
 
         return y_start + panel_height
+
+    # =========================================================================
+    # CMF SCANNER TAB
+    # =========================================================================
+
+    def setup_cmf_tab(self):
+        """Setup the CMF calibration factor scanner tab"""
+        tab_frame = ttk.Frame(self.cmf_tab, padding="10")
+        tab_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        self.cmf_tab.columnconfigure(0, weight=1)
+        self.cmf_tab.rowconfigure(0, weight=1)
+
+        # Scan button
+        scan_frame = ttk.Frame(tab_frame)
+        scan_frame.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
+
+        scan_btn = ttk.Button(scan_frame,
+                             text="Scan for CMF Calibration Factors",
+                             command=self.scan_cmf_files)
+        scan_btn.pack(side=tk.LEFT, padx=5)
+
+        # Export button
+        export_cmf_btn = ttk.Button(scan_frame,
+                                   text="Export to Excel",
+                                   command=self.export_cmf_to_excel)
+        export_cmf_btn.pack(side=tk.LEFT, padx=5)
+
+        # Summary label
+        self.cmf_summary_var = tk.StringVar(value="No scan performed yet")
+        summary_label = ttk.Label(scan_frame,
+                                 textvariable=self.cmf_summary_var,
+                                 foreground='blue')
+        summary_label.pack(side=tk.LEFT, padx=20)
+
+        # Results tree
+        tree_frame = ttk.Frame(tab_frame)
+        tree_frame.grid(row=1, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), pady=5)
+        tab_frame.rowconfigure(1, weight=1)
+
+        # Scrollbars
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical")
+        hsb = ttk.Scrollbar(tree_frame, orient="horizontal")
+
+        self.cmf_tree = ttk.Treeview(tree_frame,
+                                    columns=('Type', 'ID', 'Name', 'Evaluation', 'Calibration'),
+                                    show='tree headings',
+                                    yscrollcommand=vsb.set,
+                                    xscrollcommand=hsb.set)
+
+        vsb.config(command=self.cmf_tree.yview)
+        hsb.config(command=self.cmf_tree.xview)
+
+        # Column configuration
+        self.cmf_tree.heading('#0', text='Item')
+        self.cmf_tree.heading('Type', text='Type')
+        self.cmf_tree.heading('ID', text='ID')
+        self.cmf_tree.heading('Name', text='Name')
+        self.cmf_tree.heading('Evaluation', text='Evaluation')
+        self.cmf_tree.heading('Calibration', text='Calibration Factor')
+
+        self.cmf_tree.column('#0', width=200, anchor='w')
+        self.cmf_tree.column('Type', width=100, anchor='center')
+        self.cmf_tree.column('ID', width=80, anchor='center')
+        self.cmf_tree.column('Name', width=300, anchor='w')
+        self.cmf_tree.column('Evaluation', width=120, anchor='w')
+        self.cmf_tree.column('Calibration', width=200, anchor='w')
+
+        # Grid layout
+        self.cmf_tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        vsb.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        hsb.grid(row=1, column=0, sticky=(tk.W, tk.E))
+
+        tree_frame.columnconfigure(0, weight=1)
+        tree_frame.rowconfigure(0, weight=1)
+
+        # Store CMF data for export
+        self.cmf_data = []
+
+    def scan_cmf_files(self):
+        """Scan project for CMF calibration files"""
+        print("DEBUG: scan_cmf_files called")
+        project_path = self.project_path.get()
+        print(f"DEBUG: project_path = {project_path}")
+        print(f"DEBUG: placeholder_active = {self.placeholder_active}")
+
+        # Check if placeholder is active
+        if self.placeholder_active or not project_path or not os.path.isdir(project_path):
+            print("DEBUG: Invalid project path")
+            messagebox.showerror("Error", "Please select a valid project directory")
+            return
+
+        print("DEBUG: Starting scan...")
+
+        self.status_var.set("Scanning for CMF files...")
+        self.cmf_tree.delete(*self.cmf_tree.get_children())
+        self.cmf_data = []
+
+        try:
+            # Find all evaluation.1.cpm.cmf.csv files
+            cmf_files = []
+            for root, dirs, files in os.walk(project_path):
+                for file in files:
+                    if file == 'evaluation.1.cpm.cmf.csv':
+                        cmf_files.append(os.path.join(root, file))
+
+            if not cmf_files:
+                self.cmf_summary_var.set("No CMF files found")
+                self.status_var.set("No CMF files found in project")
+                return
+
+            # Parse each CMF file
+            highway_count = 0
+            intersection_count = 0
+            ramp_count = 0
+
+            for cmf_path in cmf_files:
+                # Extract alignment info from path
+                # Path format: .../h1/e6/evaluation.1.cpm.cmf.csv or .../i100/e1/evaluation.1.cpm.cmf.csv
+                path_parts = cmf_path.replace('\\', '/').split('/')
+
+                alignment_id = None
+                alignment_type = None
+                eval_folder = None
+
+                for i, part in enumerate(path_parts):
+                    if part.startswith('h') and part[1:].isdigit():
+                        alignment_id = part
+                        alignment_type = 'Highway'
+                        if i + 1 < len(path_parts):
+                            eval_folder = path_parts[i + 1]
+                        break
+                    elif part.startswith('i') and part[1:].isdigit():
+                        alignment_id = part
+                        alignment_type = 'Intersection'
+                        if i + 1 < len(path_parts):
+                            eval_folder = path_parts[i + 1]
+                        break
+                    elif part.startswith('r') and part[1:].isdigit():
+                        alignment_id = part
+                        alignment_type = 'Ramp Terminal'
+                        if i + 1 < len(path_parts):
+                            eval_folder = path_parts[i + 1]
+                        break
+
+                if not alignment_id:
+                    continue
+
+                # Read the CMF file and extract line 27, column B
+                calibration = None
+                alignment_name = "Unknown"
+
+                try:
+                    with open(cmf_path, 'r', encoding='utf-8') as f:
+                        lines = f.readlines()
+
+                        # Line 27 (index 26) contains calibration
+                        if len(lines) >= 27:
+                            line27 = lines[26].strip()
+                            parts = line27.split(',')
+                            if len(parts) >= 2:
+                                # Remove quotes from calibration value
+                                calibration = parts[1].strip('"')
+
+                        # Line 17 contains highway/alignment name
+                        if len(lines) >= 17:
+                            line17 = lines[16].strip()
+                            parts = line17.split(',')
+                            if len(parts) >= 2:
+                                alignment_name = parts[1].strip('"')
+
+                except Exception as e:
+                    calibration = f"Error: {str(e)}"
+
+                # Store data
+                cmf_entry = {
+                    'type': alignment_type,
+                    'id': alignment_id,
+                    'name': alignment_name,
+                    'evaluation': eval_folder if eval_folder else 'Unknown',
+                    'calibration': calibration if calibration else 'Not found',
+                    'path': cmf_path
+                }
+                self.cmf_data.append(cmf_entry)
+
+                # Count by type
+                if alignment_type == 'Highway':
+                    highway_count += 1
+                elif alignment_type == 'Intersection':
+                    intersection_count += 1
+                elif alignment_type == 'Ramp Terminal':
+                    ramp_count += 1
+
+            # Populate tree
+            self.populate_cmf_tree()
+
+            # Update summary
+            summary = f"Total: {len(self.cmf_data)} | "
+            summary += f"Highways: {highway_count} | "
+            summary += f"Intersections: {intersection_count} | "
+            summary += f"Ramp Terminals: {ramp_count}"
+            self.cmf_summary_var.set(summary)
+            self.status_var.set(f"Found {len(self.cmf_data)} CMF files")
+
+        except Exception as e:
+            messagebox.showerror("Scan Error", f"Error scanning CMF files:\n{str(e)}")
+            self.status_var.set("CMF scan failed")
+
+    def populate_cmf_tree(self):
+        """Populate the CMF tree with grouped data"""
+        # Group by type
+        highways = [d for d in self.cmf_data if d['type'] == 'Highway']
+        intersections = [d for d in self.cmf_data if d['type'] == 'Intersection']
+        ramps = [d for d in self.cmf_data if d['type'] == 'Ramp Terminal']
+
+        # Add highways
+        if highways:
+            hw_parent = self.cmf_tree.insert('', 'end', text=f'HIGHWAYS ({len(highways)})',
+                                            values=('', '', '', '', ''))
+            for hw in sorted(highways, key=lambda x: x['id']):
+                self.cmf_tree.insert(hw_parent, 'end',
+                                   text=hw['id'],
+                                   values=(hw['type'], hw['id'], hw['name'],
+                                         hw['evaluation'], hw['calibration']))
+
+        # Add intersections
+        if intersections:
+            int_parent = self.cmf_tree.insert('', 'end', text=f'INTERSECTIONS ({len(intersections)})',
+                                             values=('', '', '', '', ''))
+            for i in sorted(intersections, key=lambda x: x['id']):
+                self.cmf_tree.insert(int_parent, 'end',
+                                   text=i['id'],
+                                   values=(i['type'], i['id'], i['name'],
+                                         i['evaluation'], i['calibration']))
+
+        # Add ramp terminals
+        if ramps:
+            ramp_parent = self.cmf_tree.insert('', 'end', text=f'RAMP TERMINALS ({len(ramps)})',
+                                              values=('', '', '', '', ''))
+            for r in sorted(ramps, key=lambda x: x['id']):
+                self.cmf_tree.insert(ramp_parent, 'end',
+                                   text=r['id'],
+                                   values=(r['type'], r['id'], r['name'],
+                                         r['evaluation'], r['calibration']))
+
+    def export_cmf_to_excel(self):
+        """Export CMF data to Excel"""
+        if not self.cmf_data:
+            messagebox.showwarning("No Data", "No CMF data to export. Please scan first.")
+            return
+
+        if not OPENPYXL_AVAILABLE:
+            messagebox.showerror("Missing Dependency",
+                               "openpyxl is required for Excel export.\n"
+                               "Install it with: pip install openpyxl")
+            return
+
+        filename = filedialog.asksaveasfilename(
+            defaultextension=".xlsx",
+            filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
+            initialfile="CMF_Calibration_Factors.xlsx"
+        )
+
+        if not filename:
+            return
+
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import Font, PatternFill, Alignment
+
+            wb = Workbook()
+            ws = wb.active
+            ws.title = "CMF Calibration Factors"
+
+            # Headers
+            headers = ['Type', 'ID', 'Name', 'Evaluation', 'Calibration Factor', 'File Path']
+            ws.append(headers)
+
+            # Style headers
+            header_fill = PatternFill(start_color="366092", end_color="366092", fill_type="solid")
+            header_font = Font(bold=True, color="FFFFFF")
+            for cell in ws[1]:
+                cell.fill = header_fill
+                cell.font = header_font
+                cell.alignment = Alignment(horizontal='center')
+
+            # Add data
+            for entry in self.cmf_data:
+                ws.append([
+                    entry['type'],
+                    entry['id'],
+                    entry['name'],
+                    entry['evaluation'],
+                    entry['calibration'],
+                    entry['path']
+                ])
+
+            # Adjust column widths
+            ws.column_dimensions['A'].width = 15
+            ws.column_dimensions['B'].width = 10
+            ws.column_dimensions['C'].width = 50
+            ws.column_dimensions['D'].width = 15
+            ws.column_dimensions['E'].width = 25
+            ws.column_dimensions['F'].width = 60
+
+            wb.save(filename)
+            messagebox.showinfo("Export Successful",
+                              f"CMF data exported to:\n{filename}")
+            self.status_var.set(f"Exported CMF data to {os.path.basename(filename)}")
+
+        except Exception as e:
+            messagebox.showerror("Export Error",
+                               f"Failed to export to Excel:\n{str(e)}")
 
     # =========================================================================
     # UPDATE CHECKING

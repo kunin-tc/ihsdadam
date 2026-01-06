@@ -29,6 +29,7 @@ env/
 .idea/
 *.swp
 *.swo
+.claude/
 
 # OS
 .DS_Store
@@ -44,3 +45,39 @@ temp_classes/
 
 # Logs
 *.log
+
+# Documentation files (keep in repo but ignore other misc files)
+*.docx
+*.pdf
+*.zip
+
+# IHSDM installation files
+bin/
+jre/
+jre64/
+lib/
+jar/
+chm/
+datadict/
+highways/
+html/
+policy/
+vdanl/
+config/
+old config/
+templates/
+
+# Tutorial and reference materials
+Tutorial/
+
+# Java files not needed in repo
+*.l4j.ini
+*.props
+jar_contents.txt
+license.txt
+nul
+
+# Test/experimental files
+*_old.py
+*_partial.py
+test_*.py
