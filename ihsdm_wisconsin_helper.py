@@ -31,11 +31,12 @@ from urllib.error import URLError
 
 # Import version info
 try:
-    from version import __version__, __app_name__, GITHUB_API_URL
+    from version import __version__, __app_name__, GITHUB_API_URL, GITHUB_RELEASES_URL
 except ImportError:
     __version__ = "1.0.0"
     __app_name__ = "IHSDM Wisconsin Helper"
     GITHUB_API_URL = None
+    GITHUB_RELEASES_URL = None
 
 try:
     from openpyxl import Workbook, load_workbook
@@ -251,6 +252,9 @@ class IHSDMWisconsinHelper:
         self.version_label.pack(side=tk.LEFT, pady=10)
         self.version_label.bind("<Button-1>", lambda e: self.check_for_updates(show_current=True))
 
+        # Add tooltip for version label
+        self.create_tooltip(self.version_label, "Click to check for updates")
+
         subtitle_label = tk.Label(header_frame,
                                  text="Warning Extraction & Data Compilation",
                                  font=('Segoe UI', 10, 'italic'),
@@ -336,6 +340,41 @@ class IHSDMWisconsinHelper:
                                 anchor=tk.E,
                                 padx=15)
         credits_label.pack(side=tk.RIGHT)
+
+    # =========================================================================
+    # TOOLTIP HELPER
+    # =========================================================================
+
+    def create_tooltip(self, widget, text):
+        """Create a tooltip that appears on hover"""
+        tooltip = None
+
+        def show_tooltip(event):
+            nonlocal tooltip
+            x, y, _, _ = widget.bbox("insert")
+            x += widget.winfo_rootx() + 25
+            y += widget.winfo_rooty() + 25
+
+            tooltip = tk.Toplevel(widget)
+            tooltip.wm_overrideredirect(True)
+            tooltip.wm_geometry(f"+{x}+{y}")
+
+            label = tk.Label(tooltip, text=text,
+                           background="#FFFFE0",
+                           relief="solid",
+                           borderwidth=1,
+                           font=('Segoe UI', 9),
+                           padx=5, pady=3)
+            label.pack()
+
+        def hide_tooltip(event):
+            nonlocal tooltip
+            if tooltip:
+                tooltip.destroy()
+                tooltip = None
+
+        widget.bind("<Enter>", show_tooltip)
+        widget.bind("<Leave>", hide_tooltip)
 
     # =========================================================================
     # WARNING EXTRACTOR TAB
@@ -2848,11 +2887,12 @@ View horizontal and vertical alignment profiles for any highway alignment in you
 
         def check_thread():
             try:
-                # Make request to GitHub API
+                # Make request to GitHub API with longer timeout for corporate networks
                 req = Request(GITHUB_API_URL)
                 req.add_header('User-Agent', f'{__app_name__}/{__version__}')
 
-                with urlopen(req, timeout=5) as response:
+                # Increased timeout to 15 seconds for slower corporate networks
+                with urlopen(req, timeout=15) as response:
                     data = json.loads(response.read().decode('utf-8'))
 
                     latest_version = data['tag_name'].lstrip('v')
@@ -2868,15 +2908,12 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                         self.root.after(0, lambda: messagebox.showinfo("Up to Date",
                             f"You have the latest version ({__version__})"))
 
-            except URLError:
+            except URLError as e:
                 if show_current:
-                    self.root.after(0, lambda: messagebox.showwarning("Update Check Failed",
-                        "Could not connect to GitHub to check for updates.\n"
-                        "Please check your internet connection."))
+                    self.root.after(0, lambda: self._show_update_failed_dialog())
             except Exception as e:
                 if show_current:
-                    self.root.after(0, lambda: messagebox.showerror("Update Check Error",
-                        f"Error checking for updates: {str(e)}"))
+                    self.root.after(0, lambda: self._show_update_failed_dialog())
 
         # Run in background thread
         thread = threading.Thread(target=check_thread, daemon=True)
@@ -2899,6 +2936,67 @@ View horizontal and vertical alignment profiles for any highway alignment in you
             return -1
 
         return 0
+
+    def _show_update_failed_dialog(self):
+        """Show dialog when update check fails with link to releases page"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Update Check Failed")
+        dialog.geometry("450x280")
+        dialog.transient(self.root)
+        dialog.grab_set()
+
+        # Center dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (450 // 2)
+        y = (dialog.winfo_screenheight() // 2) - (280 // 2)
+        dialog.geometry(f"450x280+{x}+{y}")
+
+        # Content
+        content = tk.Frame(dialog, padx=25, pady=25)
+        content.pack(fill=tk.BOTH, expand=True)
+
+        # Title
+        tk.Label(content, text="Cannot Check for Updates",
+                font=('Segoe UI', 12, 'bold')).pack(pady=(0, 15))
+
+        # Message
+        message = (
+            "Could not connect to GitHub to check for updates.\n\n"
+            "This may be due to:\n"
+            "  • Firewall blocking GitHub access\n"
+            "  • No internet connection\n"
+            "  • Corporate proxy settings\n\n"
+            "You can still check for updates manually:"
+        )
+        tk.Label(content, text=message, justify=tk.LEFT,
+                font=('Segoe UI', 9)).pack(pady=(0, 15))
+
+        # Buttons
+        button_frame = tk.Frame(content)
+        button_frame.pack(pady=10)
+
+        def open_releases():
+            if GITHUB_RELEASES_URL:
+                webbrowser.open(GITHUB_RELEASES_URL)
+            dialog.destroy()
+
+        tk.Button(button_frame, text="Open Releases Page",
+                 command=open_releases,
+                 bg=self.colors['primary'],
+                 fg='white',
+                 font=('Segoe UI', 10, 'bold'),
+                 padx=20, pady=8,
+                 cursor='hand2').pack(side=tk.LEFT, padx=5)
+
+        tk.Button(button_frame, text="Close",
+                 command=dialog.destroy,
+                 font=('Segoe UI', 10),
+                 padx=20, pady=8).pack(side=tk.LEFT, padx=5)
+
+        # Note
+        tk.Label(content, text="The application works normally without update checks.",
+                font=('Segoe UI', 8, 'italic'),
+                fg='gray').pack(pady=(15, 0))
 
     def _show_update_dialog(self, new_version, download_url, release_notes):
         """Show dialog when update is available"""
@@ -2966,8 +3064,9 @@ View horizontal and vertical alignment profiles for any highway alignment in you
 
     def run(self):
         """Start the application"""
-        # Check for updates on startup (non-blocking)
-        self.root.after(1000, lambda: self.check_for_updates(show_current=False))
+        # Check for updates on startup (disabled due to firewall issues)
+        # Users can manually check by clicking the version number in the top-right
+        # self.root.after(1000, lambda: self.check_for_updates(show_current=False))
         self.root.mainloop()
 
 
