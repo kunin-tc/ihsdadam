@@ -305,9 +305,9 @@ class IHSDMWisconsinHelper:
         self.notebook.add(self.visual_tab, text="  Visual View  ")
         self.setup_visual_tab()
 
-        # Tab 5: CMF Scanner
+        # Tab 5: Calibration Scanner
         self.cmf_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.cmf_tab, text="  CMF Scanner  ")
+        self.notebook.add(self.cmf_tab, text="  Calibration Scanner  ")
         self.setup_cmf_tab()
 
         # Tab 6: AADT Input
@@ -1487,10 +1487,15 @@ View horizontal and vertical alignment profiles for any highway alignment in you
 
         try:
             project_dir = Path(project_path)
-            pdf_files = list(project_dir.glob("**/evaluation.1.report.pdf"))
+            # Search for all evaluation report PDFs (e1, e2, e3, etc.)
+            pdf_files = list(project_dir.glob("**/e*/evaluation.*.report.pdf"))
 
             if not pdf_files:
-                self.log_appendix("No evaluation.1.report.pdf files found.")
+                # Fallback to old pattern
+                pdf_files = list(project_dir.glob("**/evaluation.*.report.pdf"))
+
+            if not pdf_files:
+                self.log_appendix("No evaluation.*.report.pdf files found.")
                 messagebox.showwarning("No Files", "No evaluation report PDFs found in the project.")
                 return
 
@@ -1678,8 +1683,10 @@ View horizontal and vertical alignment profiles for any highway alignment in you
             if self.appendix_selected:
                 pdf_files = [Path(path) for path, var in self.appendix_selected.items() if var.get()]
             else:
-                # Fallback: scan for all PDFs if user didn't scan first
-                pdf_files = list(project_dir.glob("**/evaluation.1.report.pdf"))
+                # Fallback: scan for all PDFs if user didn't scan first (all e* folders)
+                pdf_files = list(project_dir.glob("**/e*/evaluation.*.report.pdf"))
+                if not pdf_files:
+                    pdf_files = list(project_dir.glob("**/evaluation.*.report.pdf"))
 
             if not pdf_files:
                 self.log_appendix("No evaluation reports selected or found.")
@@ -3167,13 +3174,16 @@ Once you've set up all your AADT ranges in IHSDM, proceed to Step 2."""
 
         ttk.Label(step2_frame, text="BalancedOutput Column Ranges (daily forecast for eval year):").grid(row=1, column=0, sticky=tk.W, pady=5)
         ttk.Entry(step2_frame, textvariable=self.aadt_forecast_columns, width=30).grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
-        ttk.Label(step2_frame, text="e.g., DQ:DR,DS:DT (ID:Value pairs)", font=('Segoe UI', 8, 'italic')).grid(row=1, column=2, sticky=tk.W)
+        ttk.Label(step2_frame, text="Format: MainlineID:MainlineVal,TurnID:TurnVal (e.g., DQ:DR,DS:DT)", font=('Segoe UI', 8, 'italic')).grid(row=1, column=2, sticky=tk.W)
 
         ttk.Label(step2_frame, text="Evaluation Year:").grid(row=2, column=0, sticky=tk.W, pady=5)
         ttk.Entry(step2_frame, textvariable=self.aadt_year, width=10).grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
 
-        ttk.Button(step2_frame, text="Load Forecast Data", command=self.load_aadt_forecast,
-                  style='Accent.TButton').grid(row=3, column=0, columnspan=3, pady=10)
+        btn_frame = ttk.Frame(step2_frame)
+        btn_frame.grid(row=3, column=0, columnspan=3, pady=10)
+        ttk.Button(btn_frame, text="Load Forecast Data", command=self.load_aadt_forecast,
+                  style='Accent.TButton').pack(side=tk.LEFT, padx=5)
+        ttk.Button(btn_frame, text="Show Loaded IDs", command=self.show_loaded_forecast_ids).pack(side=tk.LEFT, padx=5)
 
         self.aadt_forecast_status = tk.StringVar(value="No forecast loaded")
         ttk.Label(step2_frame, textvariable=self.aadt_forecast_status, foreground='gray').grid(row=4, column=0, columnspan=3, sticky=tk.W)
@@ -3317,6 +3327,14 @@ Click on an alignment to expand and see its sections. Enter IDs, then click "Mar
         ttk.Button(edit_frame2, text="Expand All", command=self.expand_all_aadt_tree).pack(side=tk.LEFT, padx=5)
         ttk.Button(edit_frame2, text="Collapse All", command=self.collapse_all_aadt_tree).pack(side=tk.LEFT, padx=5)
 
+        # Fourth row - Save/Load buttons
+        edit_frame3 = ttk.Frame(step4_frame)
+        edit_frame3.grid(row=5, column=0, columnspan=2, sticky=(tk.W, tk.E), pady=5)
+
+        ttk.Label(edit_frame3, text="Session:", font=('Segoe UI', 9, 'bold')).pack(side=tk.LEFT, padx=5)
+        ttk.Button(edit_frame3, text="Save Mapping to CSV", command=self.save_aadt_mapping_csv).pack(side=tk.LEFT, padx=5)
+        ttk.Button(edit_frame3, text="Load Mapping from CSV", command=self.load_aadt_mapping_csv).pack(side=tk.LEFT, padx=5)
+
         # Bind selection event
         self.aadt_tree.bind('<<TreeviewSelect>>', self.on_aadt_tree_select)
 
@@ -3426,7 +3444,11 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                                     val_cell = row[val_col_num].v if row[val_col_num] else None
 
                                     if id_cell is not None:
-                                        id_str = str(id_cell).strip()
+                                        # Handle numeric IDs - convert float to int string if possible
+                                        if isinstance(id_cell, float) and id_cell == int(id_cell):
+                                            id_str = str(int(id_cell))
+                                        else:
+                                            id_str = str(id_cell).strip()
                                         if id_str:
                                             try:
                                                 val = float(val_cell) if val_cell is not None else 0
@@ -3474,7 +3496,11 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                         val_cell = ws.cell(row=row, column=val_col_num).value
 
                         if id_cell is not None:
-                            id_str = str(id_cell).strip()
+                            # Handle numeric IDs - convert float to int string if possible
+                            if isinstance(id_cell, float) and id_cell == int(id_cell):
+                                id_str = str(int(id_cell))
+                            else:
+                                id_str = str(id_cell).strip()
                             if id_str:
                                 try:
                                     val = float(val_cell) if val_cell is not None else 0
@@ -3484,12 +3510,65 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
 
                 wb.close()
 
+            # Show sample of loaded IDs for debugging
+            sample_ids = list(self.aadt_forecast_ids.keys())[:10]
+            print(f"Loaded {len(self.aadt_forecast_ids)} forecast IDs. Sample: {sample_ids}")
+
             self.aadt_forecast_status.set(f"Loaded {len(self.aadt_forecast_ids)} forecast IDs from {sheet_name}")
             self.status_var.set(f"Forecast data loaded: {len(self.aadt_forecast_ids)} IDs")
 
         except Exception as e:
             messagebox.showerror("Error", f"Error loading forecast: {str(e)}")
             self.aadt_forecast_status.set(f"Error: {str(e)}")
+
+    def show_loaded_forecast_ids(self):
+        """Show a popup with all loaded forecast IDs for debugging"""
+        if not self.aadt_forecast_ids:
+            messagebox.showinfo("No Forecast Data", "No forecast data has been loaded yet.\n\nClick 'Load Forecast Data' first.")
+            return
+
+        # Create a popup window to show all IDs
+        popup = tk.Toplevel(self.root)
+        popup.title("Loaded Forecast IDs")
+        popup.geometry("500x600")
+        popup.transient(self.root)
+
+        ttk.Label(popup, text=f"Loaded {len(self.aadt_forecast_ids)} Forecast IDs:",
+                 font=('Segoe UI', 11, 'bold')).pack(pady=10)
+
+        # Add a search box
+        search_frame = ttk.Frame(popup)
+        search_frame.pack(fill=tk.X, padx=10)
+        ttk.Label(search_frame, text="Search:").pack(side=tk.LEFT)
+        search_var = tk.StringVar()
+        search_entry = ttk.Entry(search_frame, textvariable=search_var, width=30)
+        search_entry.pack(side=tk.LEFT, padx=5)
+
+        # Listbox with scrollbar
+        list_frame = ttk.Frame(popup)
+        list_frame.pack(fill=tk.BOTH, expand=True, padx=10, pady=10)
+
+        scrollbar = ttk.Scrollbar(list_frame)
+        scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+
+        listbox = tk.Listbox(list_frame, yscrollcommand=scrollbar.set, font=('Consolas', 10))
+        listbox.pack(side=tk.LEFT, fill=tk.BOTH, expand=True)
+        scrollbar.config(command=listbox.yview)
+
+        # Populate listbox sorted by ID
+        def update_list(*args):
+            listbox.delete(0, tk.END)
+            search_text = search_var.get().lower()
+            sorted_ids = sorted(self.aadt_forecast_ids.keys(), key=lambda x: (not x.isdigit(), x))
+            for id_str in sorted_ids:
+                if search_text in id_str.lower():
+                    value = self.aadt_forecast_ids[id_str]
+                    listbox.insert(tk.END, f"{id_str}: {int(value) if value == int(value) else value}")
+
+        search_var.trace('w', update_list)
+        update_list()
+
+        ttk.Button(popup, text="Close", command=popup.destroy).pack(pady=10)
 
     def scan_aadt_sections(self):
         """Scan project for all AADT sections in highway XMLs"""
@@ -3570,6 +3649,14 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                             'id2': '',
                             'id3': '',
                             'id4': '',
+                            'id5': '',
+                            'id6': '',
+                            'sign1': '+',
+                            'sign2': '+',
+                            'sign3': '+',
+                            'sign4': '+',
+                            'sign5': '+',
+                            'sign6': '+',
                             'calculated_aadt': ''
                         }
                         self.aadt_sections.append(section)
@@ -3749,15 +3836,27 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
         return max(0, total)  # Don't allow negative AADT
 
     def calculate_all_aadt(self):
-        """Calculate AADT for all sections"""
+        """Calculate AADT for all sections that have forecast IDs assigned"""
         if not self.aadt_forecast_ids:
             messagebox.showwarning("No Forecast", "Please load forecast data first (Step 2)")
             return
 
         calculated_count = 0
+        missing_ids = set()
+
         for i, section in enumerate(self.aadt_sections):
-            calculated = self.calculate_section_aadt(section)
-            if calculated > 0:
+            # Check if section has any IDs assigned
+            has_ids = False
+            for j in range(1, 7):
+                if section.get(f'id{j}', '').strip():
+                    has_ids = True
+                    # Track missing IDs for debugging
+                    id_val = section.get(f'id{j}', '').strip()
+                    if id_val and id_val not in self.aadt_forecast_ids:
+                        missing_ids.add(id_val)
+
+            if has_ids:
+                calculated = self.calculate_section_aadt(section)
                 section['calculated_aadt'] = str(int(calculated))
                 calculated_count += 1
             else:
@@ -3781,10 +3880,28 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                             section['calculated_aadt']
                         )
                         self.aadt_tree.item(child_item, values=values)
-                except (ValueError, tk.TclError):
-                    pass
+                except (ValueError, tk.TclError) as e:
+                    print(f"Error updating tree item {child_item}: {e}")
 
-        self.status_var.set(f"Calculated AADT for {calculated_count} of {len(self.aadt_sections)} sections")
+        status_msg = f"Calculated AADT for {calculated_count} of {len(self.aadt_sections)} sections"
+        if missing_ids:
+            status_msg += f" (Warning: {len(missing_ids)} IDs not found in forecast)"
+            print(f"Missing forecast IDs: {missing_ids}")
+            # Show popup with missing IDs to help user debug
+            if len(missing_ids) <= 10:
+                missing_list = ", ".join(sorted(missing_ids))
+            else:
+                missing_list = ", ".join(sorted(list(missing_ids)[:10])) + f"... and {len(missing_ids) - 10} more"
+            messagebox.showwarning("Missing Forecast IDs",
+                f"The following IDs were not found in the forecast workbook:\n\n{missing_list}\n\n"
+                f"Make sure the ID values match exactly (case-sensitive).\n"
+                f"Loaded forecast contains {len(self.aadt_forecast_ids)} IDs.")
+        elif calculated_count == 0:
+            messagebox.showinfo("No IDs Assigned",
+                "No forecast IDs have been assigned to any sections yet.\n\n"
+                "Select a section, enter Forecast IDs in the 'Assign IDs' section, "
+                "then click 'Apply to Selected' before using Calculate All.")
+        self.status_var.set(status_msg)
 
     def update_aadt_checklist(self):
         """Update the review checklist panel"""
@@ -4054,6 +4171,178 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                                   "Check the console for error details.")
         else:
             messagebox.showinfo("Success", f"Successfully updated {updated_count} AADT values!")
+
+    def save_aadt_mapping_csv(self):
+        """Save AADT mapping progress to CSV for later resumption"""
+        if not self.aadt_sections:
+            messagebox.showwarning("No Data", "No AADT sections to save. Please scan the project first.")
+            return
+
+        file_path = filedialog.asksaveasfilename(
+            title="Save AADT Mapping Progress",
+            defaultextension=".csv",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+
+                # Headers - include all data needed to restore state
+                headers = ['Roadway_Title', 'Section_Num', 'Start_Station', 'End_Station', 'Year',
+                          'Current_AADT', 'ID1', 'Sign1', 'ID2', 'Sign2', 'ID3', 'Sign3',
+                          'ID4', 'Sign4', 'ID5', 'Sign5', 'ID6', 'Sign6',
+                          'Calculated_AADT', 'Reviewed', 'Highway_Dir', 'XML_File']
+                writer.writerow(headers)
+
+                # Data
+                for section in self.aadt_sections:
+                    is_reviewed = section['roadway_title'] in self.aadt_reviewed_alignments
+                    row = [
+                        section['roadway_title'],
+                        section['section_num'],
+                        section['start_station'],
+                        section['end_station'],
+                        section['year'],
+                        section['current_aadt'],
+                        section.get('id1', ''),
+                        section.get('sign1', '+'),
+                        section.get('id2', ''),
+                        section.get('sign2', '+'),
+                        section.get('id3', ''),
+                        section.get('sign3', '+'),
+                        section.get('id4', ''),
+                        section.get('sign4', '+'),
+                        section.get('id5', ''),
+                        section.get('sign5', '+'),
+                        section.get('id6', ''),
+                        section.get('sign6', '+'),
+                        section['calculated_aadt'],
+                        'Yes' if is_reviewed else 'No',
+                        section['highway_dir'],
+                        section['xml_file']
+                    ]
+                    writer.writerow(row)
+
+            messagebox.showinfo("Save Complete", f"AADT mapping saved to:\n{file_path}\n\nYou can load this file later to resume your work.")
+            self.status_var.set(f"Mapping saved to {os.path.basename(file_path)}")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Error saving mapping: {str(e)}")
+
+    def load_aadt_mapping_csv(self):
+        """Load AADT mapping progress from a previously saved CSV"""
+        file_path = filedialog.askopenfilename(
+            title="Load AADT Mapping Progress",
+            filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+        )
+
+        if not file_path:
+            return
+
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                reader = csv.DictReader(f)
+
+                loaded_sections = []
+                reviewed_alignments = set()
+
+                for row in reader:
+                    section = {
+                        'roadway_title': row.get('Roadway_Title', ''),
+                        'section_num': int(row.get('Section_Num', 0)),
+                        'start_station': row.get('Start_Station', ''),
+                        'end_station': row.get('End_Station', ''),
+                        'year': row.get('Year', ''),
+                        'current_aadt': row.get('Current_AADT', ''),
+                        'id1': row.get('ID1', ''),
+                        'sign1': row.get('Sign1', '+'),
+                        'id2': row.get('ID2', ''),
+                        'sign2': row.get('Sign2', '+'),
+                        'id3': row.get('ID3', ''),
+                        'sign3': row.get('Sign3', '+'),
+                        'id4': row.get('ID4', ''),
+                        'sign4': row.get('Sign4', '+'),
+                        'id5': row.get('ID5', ''),
+                        'sign5': row.get('Sign5', '+'),
+                        'id6': row.get('ID6', ''),
+                        'sign6': row.get('Sign6', '+'),
+                        'calculated_aadt': row.get('Calculated_AADT', ''),
+                        'highway_dir': row.get('Highway_Dir', ''),
+                        'xml_file': row.get('XML_File', '')
+                    }
+                    loaded_sections.append(section)
+
+                    if row.get('Reviewed', 'No') == 'Yes':
+                        reviewed_alignments.add(section['roadway_title'])
+
+            if not loaded_sections:
+                messagebox.showwarning("No Data", "No sections found in the CSV file.")
+                return
+
+            # Update state with loaded data
+            self.aadt_sections = loaded_sections
+            self.aadt_reviewed_alignments = reviewed_alignments
+
+            # Rebuild tree view with loaded data
+            self.aadt_tree.delete(*self.aadt_tree.get_children())
+
+            # Group sections by roadway_title
+            alignments = {}
+            for i, section in enumerate(self.aadt_sections):
+                title = section['roadway_title']
+                if title not in alignments:
+                    alignments[title] = []
+                alignments[title].append((i, section))
+
+            # Create parent nodes for each alignment and child nodes for sections
+            self.aadt_alignment_nodes = {}
+            for title in sorted(alignments.keys()):
+                sections_list = alignments[title]
+                parent_id = f"align_{title}"
+                section_count = len(sections_list)
+
+                # Tag as reviewed if in reviewed set
+                tags = ('alignment', 'reviewed') if title in reviewed_alignments else ('alignment', 'pending')
+                self.aadt_tree.insert('', 'end', iid=parent_id, text=f"{title} ({section_count} sections)",
+                                     values=('', '', '', '', '', '', ''),
+                                     tags=tags, open=False)
+                self.aadt_alignment_nodes[title] = parent_id
+
+                # Create child nodes for each section
+                for idx, section in sections_list:
+                    id_display = self.get_ids_display(section)
+                    values = (
+                        section['section_num'],
+                        self.format_station(section['start_station']),
+                        self.format_station(section['end_station']),
+                        section['year'],
+                        section['current_aadt'],
+                        id_display,
+                        section['calculated_aadt']
+                    )
+                    self.aadt_tree.insert(parent_id, 'end', iid=str(idx), text='',
+                                         values=values, tags=('pending',))
+
+            # Update checklist
+            self.update_aadt_checklist()
+
+            section_count = len(self.aadt_sections)
+            align_count = len(alignments)
+            reviewed_count = len(reviewed_alignments)
+
+            self.aadt_scan_status.set(f"Loaded {section_count} sections across {align_count} alignments ({reviewed_count} reviewed)")
+            self.status_var.set(f"Loaded mapping from {os.path.basename(file_path)}")
+            messagebox.showinfo("Load Complete",
+                              f"Loaded {section_count} sections across {align_count} alignments.\n"
+                              f"{reviewed_count} alignments marked as reviewed.\n\n"
+                              f"Note: You still need to load the forecast workbook (Step 2) to calculate AADT values.")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Error loading mapping: {str(e)}")
 
     def export_aadt_mapping(self):
         """Export AADT mapping to Excel"""
