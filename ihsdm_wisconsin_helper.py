@@ -578,6 +578,7 @@ WHAT IT DOES:
 • Processes Highway Segments (h folders)
 • Processes Intersections (i folders)
 • Processes Ramp Terminals (r folders)
+• Processes Site Sets (ss folders) - Urban/Suburban arterial intersections & ramp terminals
 • Applies HSM severity distributions (K, A, B, C crashes)
 • Removes duplicates
 • Outputs to Excel workbook with separate sheets
@@ -586,6 +587,7 @@ FOLDER NAMING:
 • h1, h2, h74, etc. → Highway alignments
 • i1, i2, i100, etc. → Intersection alignments
 • r1, r2, r25, etc. → Ramp terminal alignments
+• ss1, ss2, etc. → Site sets (contain intersections & ramp terminals)
 • c1, c2, etc. → Interchanges (can contain h/i/r subfolders)
 
 ALIGNMENT NAMING BEST PRACTICES:
@@ -594,7 +596,8 @@ ALIGNMENT NAMING BEST PRACTICES:
 • Ensure single functional class per alignment
 
 OUTPUT:
-• Excel file with 3 sheets: Highway, Intersection, RampTerminal
+• Excel file with up to 5 sheets: Highway, Intersection, RampTerminal, SiteSet_Int, SiteSet_Ramp
+• Site set data goes to separate SiteSet_Int and SiteSet_Ramp sheets
 • Includes crash predictions with severity breakdown
 • Single-year mode (default): Extracts one year of predictions
 • Multi-year mode: Extracts 20 years of predictions (enable checkbox above)
@@ -1430,6 +1433,79 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                 compiler.fill_missing_ramp_terminal_values(excel_path)
                 compiler.scrub_duplicate_columns(excel_path, "RampTerminal")
 
+            # Process site sets (ss folders) - contain both intersections and ramp terminals
+            # Site sets go to their own separate sheets
+            ss_folders = [f for f in parent_folders if os.path.basename(f).lower().startswith('ss')]
+            ss_intersection_rows = []
+            ss_ramp_rows = []
+            ss_other_rows = []  # For unknown section types
+            ss_first_int = True
+            ss_first_ramp = True
+            ss_first_other = True
+            unknown_sections = []  # Track unknown section types found
+
+            # Known markers we already handle
+            known_markers = ["USA Intersection Debug Result", "Ramp Terminal CMF"]
+
+            for parent_folder in ss_folders:
+                for subfolder in os.listdir(parent_folder):
+                    subfolder_path = os.path.join(parent_folder, subfolder)
+                    if not os.path.isdir(subfolder_path):
+                        continue
+                    file_path = os.path.join(subfolder_path, target_file)
+
+                    if os.path.isfile(file_path):
+                        # Extract site set intersections (USA Intersection Debug Result sections)
+                        int_rows = compiler.extract_site_set_data(
+                            file_path,
+                            compiler.SITESET_INT_HEADER,
+                            "USA Intersection Debug Result",
+                            first_file=ss_first_int
+                        )
+                        if int_rows:
+                            ss_intersection_rows.extend(int_rows)
+                            ss_first_int = False
+
+                        # Extract site set ramp terminals (Ramp Terminal CMF sections)
+                        ramp_rows = compiler.extract_site_set_data(
+                            file_path,
+                            compiler.SITESET_RAMP_HEADER,
+                            "Ramp Terminal CMF",
+                            first_file=ss_first_ramp
+                        )
+                        if ramp_rows:
+                            ss_ramp_rows.extend(ramp_rows)
+                            ss_first_ramp = False
+
+                        # Extract unknown section types
+                        unknown_data = compiler.extract_unknown_site_set_sections(file_path, known_markers)
+                        for section_name, header_row, data_rows in unknown_data:
+                            if section_name not in unknown_sections:
+                                unknown_sections.append(section_name)
+
+                            # Add section name as first column, then header/data
+                            if ss_first_other:
+                                ss_other_rows.append(["Section Type"] + header_row)
+                                ss_first_other = False
+                            for data_row in data_rows:
+                                ss_other_rows.append([section_name] + data_row)
+
+            # Write site set intersections to separate SiteSet_Int sheet
+            if ss_intersection_rows:
+                compiler.write_rows_to_excel(ss_intersection_rows, excel_path, "SiteSet_Int")
+                compiler.fill_missing_intersection_values(excel_path, "SiteSet_Int")
+                compiler.scrub_duplicate_columns(excel_path, "SiteSet_Int")
+
+            # Write site set ramp terminals to separate SiteSet_Ramp sheet
+            if ss_ramp_rows:
+                compiler.write_rows_to_excel(ss_ramp_rows, excel_path, "SiteSet_Ramp")
+                compiler.fill_missing_ramp_terminal_values(excel_path, "SiteSet_Ramp")
+                compiler.scrub_duplicate_columns(excel_path, "SiteSet_Ramp")
+
+            # Write unknown sections to SiteSet_Other sheet for review
+            if ss_other_rows:
+                compiler.write_rows_to_excel(ss_other_rows, excel_path, "SiteSet_Other")
+
             self.status_var.set("Compilation complete!")
 
             summary = f"Compilation Complete!\n\n"
@@ -1437,7 +1513,17 @@ View horizontal and vertical alignment profiles for any highway alignment in you
             summary += f"Summary:\n"
             summary += f"  - Highway Segments: {len(unique_highway_rows)} rows\n"
             summary += f"  - Intersections: {len(all_intersection_rows)} rows\n"
-            summary += f"  - Ramp Terminals: {len(all_ramp_rows)} rows"
+            summary += f"  - Ramp Terminals: {len(all_ramp_rows)} rows\n"
+            summary += f"  - Site Set Intersections: {len(ss_intersection_rows)} rows\n"
+            summary += f"  - Site Set Ramp Terminals: {len(ss_ramp_rows)} rows"
+
+            # Alert user about unknown section types
+            if unknown_sections:
+                summary += f"\n  - Site Set Other: {len(ss_other_rows)} rows"
+                summary += f"\n\nNOTE: Unknown site set section types extracted to SiteSet_Other sheet:\n"
+                for section in unknown_sections:
+                    summary += f"  - {section}\n"
+                summary += "\nPlease review and verify the data extraction is correct."
 
             messagebox.showinfo("Success", summary)
 
