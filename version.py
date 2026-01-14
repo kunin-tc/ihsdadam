@@ -1,6 +1,6 @@
 """Version information for IHSDadaM"""
 
-__version__ = "1.1.4"
+__version__ = "1.1.5"
 __app_name__ = "IHSDadaM"
 __author__ = "Adam Engbring"
 __email__ = "aengbring@hntb.com"

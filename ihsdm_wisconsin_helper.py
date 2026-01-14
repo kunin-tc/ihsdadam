@@ -253,7 +253,10 @@ class IHSDMWisconsinHelper:
         self.version_label.bind("<Button-1>", lambda e: self.check_for_updates(show_current=True))
 
         # Add tooltip for version label
-        self.create_tooltip(self.version_label, "Click to check for updates")
+        self.create_tooltip(self.version_label, "Click to view version info")
+
+        # Store header_frame reference for popup positioning
+        self.header_frame = header_frame
 
         subtitle_label = tk.Label(header_frame,
                                  text="Warning Extraction & Data Compilation",
@@ -3327,47 +3330,121 @@ View horizontal and vertical alignment profiles for any highway alignment in you
     # =========================================================================
 
     def check_for_updates(self, show_current=False):
-        """Check GitHub for new releases"""
-        if not GITHUB_API_URL:
-            if show_current:
-                messagebox.showinfo("Version",
-                    f"Current version: {__version__}\n\n"
-                    "GitHub repository not configured for auto-updates.")
-            return
+        """Show version info dialog with link to releases page"""
+        # Always show the version dialog when clicked - don't rely on API
+        self._show_version_dialog()
 
-        def check_thread():
-            try:
-                # Make request to GitHub API with longer timeout for corporate networks
-                req = Request(GITHUB_API_URL)
-                req.add_header('User-Agent', f'{__app_name__}/{__version__}')
+    def _show_version_dialog(self):
+        """Show dialog with current version and link to check for updates"""
+        dialog = tk.Toplevel(self.root)
+        dialog.title("Version Info")
+        dialog.geometry("420x250")
+        dialog.transient(self.root)
+        dialog.grab_set()
 
-                # Increased timeout to 15 seconds for slower corporate networks
-                with urlopen(req, timeout=15) as response:
-                    data = json.loads(response.read().decode('utf-8'))
+        # Center dialog
+        dialog.update_idletasks()
+        x = (dialog.winfo_screenwidth() // 2) - (420 // 2)
+        y = (dialog.winfo_screenheight() // 2) - (250 // 2)
+        dialog.geometry(f"420x250+{x}+{y}")
 
-                    latest_version = data['tag_name'].lstrip('v')
-                    download_url = data['html_url']
-                    release_notes = data['body']
+        # Content
+        content = tk.Frame(dialog, padx=25, pady=20)
+        content.pack(fill=tk.BOTH, expand=True)
 
-                    # Compare versions
-                    if self._compare_versions(latest_version, __version__) > 0:
-                        # New version available
-                        self.root.after(0, lambda: self._show_update_dialog(
-                            latest_version, download_url, release_notes))
-                    elif show_current:
-                        self.root.after(0, lambda: messagebox.showinfo("Up to Date",
-                            f"You have the latest version ({__version__})"))
+        # App name and version
+        tk.Label(content, text=__app_name__,
+                font=('Segoe UI', 16, 'bold'),
+                fg=self.colors['primary']).pack(pady=(0, 5))
 
-            except URLError as e:
-                if show_current:
-                    self.root.after(0, lambda: self._show_update_failed_dialog())
-            except Exception as e:
-                if show_current:
-                    self.root.after(0, lambda: self._show_update_failed_dialog())
+        tk.Label(content, text=f"Version {__version__}",
+                font=('Segoe UI', 12)).pack(pady=(0, 20))
 
-        # Run in background thread
-        thread = threading.Thread(target=check_thread, daemon=True)
-        thread.start()
+        # Instruction message
+        message = (
+            "Click the button below to view all releases on GitHub.\n"
+            "Compare the latest version number with yours to see\n"
+            "if an update is available."
+        )
+        tk.Label(content, text=message, justify=tk.CENTER,
+                font=('Segoe UI', 9), fg='#555555').pack(pady=(0, 20))
+
+        # Buttons frame
+        button_frame = tk.Frame(content)
+        button_frame.pack(pady=10)
+
+        def open_releases():
+            if GITHUB_RELEASES_URL:
+                webbrowser.open(GITHUB_RELEASES_URL)
+
+        tk.Button(button_frame, text="View Releases on GitHub",
+                 command=open_releases,
+                 bg=self.colors['primary'],
+                 fg='white',
+                 font=('Segoe UI', 10, 'bold'),
+                 padx=20, pady=8,
+                 cursor='hand2').pack(side=tk.LEFT, padx=5)
+
+        tk.Button(button_frame, text="Close",
+                 command=dialog.destroy,
+                 font=('Segoe UI', 10),
+                 padx=20, pady=8).pack(side=tk.LEFT, padx=5)
+
+    def _show_update_notification(self):
+        """Show a small popup notification near the version label"""
+        # Create a small toplevel window
+        self.update_popup = tk.Toplevel(self.root)
+        self.update_popup.overrideredirect(True)  # No window decorations
+        self.update_popup.attributes('-topmost', True)
+
+        # Create frame with border
+        popup_frame = tk.Frame(self.update_popup, bg=self.colors['primary'], padx=2, pady=2)
+        popup_frame.pack(fill=tk.BOTH, expand=True)
+
+        inner_frame = tk.Frame(popup_frame, bg='#fffde7', padx=10, pady=8)  # Light yellow background
+        inner_frame.pack(fill=tk.BOTH, expand=True)
+
+        # Message and close button in same row
+        msg_frame = tk.Frame(inner_frame, bg='#fffde7')
+        msg_frame.pack(fill=tk.X)
+
+        msg_label = tk.Label(msg_frame,
+                            text="Click here to check for updates",
+                            font=('Segoe UI', 9),
+                            bg='#fffde7',
+                            fg='#333333',
+                            cursor='hand2')
+        msg_label.pack(side=tk.LEFT)
+
+        # Small X to dismiss
+        close_label = tk.Label(msg_frame,
+                              text=" \u00d7",  # × symbol
+                              font=('Segoe UI', 10, 'bold'),
+                              bg='#fffde7',
+                              fg='#999999',
+                              cursor='hand2')
+        close_label.pack(side=tk.RIGHT)
+
+        # Click handlers
+        def on_click(e):
+            self.update_popup.destroy()
+            self.check_for_updates(show_current=True)
+
+        def on_close(e):
+            self.update_popup.destroy()
+
+        msg_label.bind('<Button-1>', on_click)
+        inner_frame.bind('<Button-1>', on_click)
+        close_label.bind('<Button-1>', on_close)
+
+        # Position popup below the version label
+        self.root.update_idletasks()
+        x = self.version_label.winfo_rootx()
+        y = self.version_label.winfo_rooty() + self.version_label.winfo_height() + 5
+        self.update_popup.geometry(f"+{x}+{y}")
+
+        # Auto-dismiss after 8 seconds
+        self.update_popup.after(8000, lambda: self.update_popup.destroy() if self.update_popup.winfo_exists() else None)
 
     def _compare_versions(self, v1, v2):
         """Compare version strings (returns: 1 if v1>v2, -1 if v1<v2, 0 if equal)"""
@@ -4845,9 +4922,8 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
 
     def run(self):
         """Start the application"""
-        # Check for updates on startup (disabled due to firewall issues)
-        # Users can manually check by clicking the version number in the top-right
-        # self.root.after(1000, lambda: self.check_for_updates(show_current=False))
+        # Show update notification popup after 3 seconds
+        self.root.after(3000, self._show_update_notification)
         self.root.mainloop()
 
 
