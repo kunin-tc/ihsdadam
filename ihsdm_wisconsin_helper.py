@@ -1970,11 +1970,29 @@ View horizontal and vertical alignment profiles for any highway alignment in you
             speed_data = self.parse_speed(roadway, min_sta_float, max_sta_float)
             func_class_data = self.parse_functional_class(roadway, min_sta_float, max_sta_float)
 
+            # Get highway node name and parse intersection connections
+            highway_node_name = roadway.get('nodeName', '')
+            intersection_data = self.parse_intersections(str(project_dir), highway_node_name)
+
+            # Combine ramps and intersections into connections_data
+            connections_data = []
+            for ramp in ramps_data:
+                connections_data.append({
+                    'station': ramp['station'],
+                    'name': ramp.get('name', 'Ramp'),
+                    'type': 'ramp',
+                    'ramp_type': ramp.get('ramp_type', 'entrance')
+                })
+            connections_data.extend(intersection_data)
+            connections_data = sorted(connections_data, key=lambda x: x['station'])
+
             # Debug: Print what we found
             print(f"DEBUG: Parsed data counts:")
             print(f"  Lanes: {len(lanes_data)}")
             print(f"  Shoulders: {len(shoulders_data)}")
             print(f"  Ramps: {len(ramps_data)}")
+            print(f"  Intersections: {len(intersection_data)}")
+            print(f"  Connections: {len(connections_data)}")
             print(f"  Curves: {len(curves_data)}")
             print(f"  Traffic: {len(traffic_data)}")
             print(f"  Median: {len(median_data)}")
@@ -2004,7 +2022,7 @@ View horizontal and vertical alignment profiles for any highway alignment in you
 
             # ===== LANE CONFIGURATION PANEL =====
             if lanes_data or shoulders_data:
-                y_offset = self.draw_lane_panel(canvas, lanes_data, shoulders_data, margin_x, panel_width, y_offset,
+                y_offset = self.draw_lane_panel(canvas, lanes_data, shoulders_data, connections_data, margin_x, panel_width, y_offset,
                                               min_sta_float, max_sta_float)
                 y_offset += 30
 
@@ -2165,6 +2183,92 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                 continue
         return sorted(ramps, key=lambda x: x['station'])
 
+    def parse_intersections(self, project_dir, highway_node_name):
+        """Parse intersection connections to this highway from project's intersection XML files"""
+        connections = []
+        searched_dirs = []
+        found_stations = set()  # Track unique stations to avoid duplicates
+
+        # Extract highway suffix (e.g., "h2" from "aengbring.p90.h2")
+        # Match by suffix to handle imported projects where node names may have different project IDs
+        highway_suffix = highway_node_name.split('.')[-1] if '.' in highway_node_name else highway_node_name
+
+        def search_intersection_dir(int_dir, dir_name):
+            """Search a single intersection directory for connections to our highway"""
+            found = False
+            for xml_file in ['intersection.1.xml', 'intersection.xml']:
+                xml_path = os.path.join(int_dir, xml_file)
+                if os.path.exists(xml_path):
+                    try:
+                        tree = ET.parse(xml_path)
+                        root = tree.getroot()
+
+                        # Try both intersection namespace and highway namespace
+                        intersection = None
+                        for ns in ['{http://www.ihsdm.org/schema/Intersection-1.0}',
+                                   '{http://www.ihsdm.org/schema/Highway-1.0}', '']:
+                            intersection = root.find(f'{ns}Intersection')
+                            if intersection is not None:
+                                break
+
+                        if intersection is not None:
+                            int_name = intersection.get('intersectionName', f'Intersection {dir_name}')
+
+                            # Check all Leg elements for connections to our highway
+                            # Each Leg has highwayNodeName and highwayStation attributes
+                            for ns in ['{http://www.ihsdm.org/schema/Intersection-1.0}',
+                                       '{http://www.ihsdm.org/schema/Highway-1.0}', '']:
+                                for leg in intersection.findall(f'{ns}Leg'):
+                                    leg_node = leg.get('highwayNodeName', '')
+                                    leg_suffix = leg_node.split('.')[-1] if '.' in leg_node else leg_node
+                                    if leg_suffix == highway_suffix:
+                                        # Use highwayStation from the leg
+                                        station = float(leg.get('highwayStation', '0.0'))
+                                        if station not in found_stations:
+                                            found_stations.add(station)
+                                            connections.append({
+                                                'station': station,
+                                                'name': int_name,
+                                                'type': 'intersection'
+                                            })
+                                            found = True
+
+                            if found:
+                                return True  # Found at least one connection, use this XML file
+                    except Exception as e:
+                        print(f"DEBUG: Error parsing {xml_path}: {e}")
+                        continue
+            return False
+
+        # Scan for intersection directories (i*) at project root
+        try:
+            for item in os.listdir(project_dir):
+                item_path = os.path.join(project_dir, item)
+                if os.path.isdir(item_path):
+                    if item.startswith('i') and item[1:].isdigit():
+                        # Direct intersection directory
+                        searched_dirs.append(item)
+                        search_intersection_dir(item_path, item)
+                    elif item.startswith('c') and item[1:].isdigit():
+                        # Interchange container - search for intersections inside
+                        try:
+                            for sub_item in os.listdir(item_path):
+                                if sub_item.startswith('i') and sub_item[1:].isdigit():
+                                    sub_path = os.path.join(item_path, sub_item)
+                                    if os.path.isdir(sub_path):
+                                        searched_dirs.append(f"{item}/{sub_item}")
+                                        search_intersection_dir(sub_path, f"{item}/{sub_item}")
+                        except Exception:
+                            continue
+        except Exception:
+            pass
+
+        print(f"DEBUG: Searched intersection dirs: {searched_dirs}")
+        print(f"DEBUG: Found {len(connections)} intersections for highway '{highway_node_name}'")
+        for conn in connections:
+            print(f"DEBUG:   - {conn['name']} at station {conn['station']}")
+        return sorted(connections, key=lambda x: x['station'])
+
     def parse_horizontal_curves(self, root, min_sta, max_sta):
         """Parse horizontal alignment curves and tangents"""
         curves = []
@@ -2274,211 +2378,455 @@ View horizontal and vertical alignment profiles for any highway alignment in you
 
     # ===== DRAWING FUNCTIONS =====
 
-    def draw_lane_panel(self, canvas, lanes_data, shoulders_data, margin_x, panel_width, y_start, min_sta, max_sta):
-        """Draw lane configuration as roadway plan view with lanes building from centerline
+    def get_max_lane_priority_at_station(self, station, lanes_data, side):
+        """Find the outermost lane (highest priority level) active at a given station for a given side"""
+        max_priority_level = 0
+        for lane in lanes_data:
+            if lane['begin'] <= station <= lane['end']:
+                lane_side = lane['side']
+                if lane_side == side or lane_side == 'both':
+                    priority_level = lane['priority'] // 10
+                    max_priority_level = max(max_priority_level, priority_level)
+        return max_priority_level
 
-        Layout (based on user sketch):
-        - Centerline (red) runs horizontally
+    def draw_lane_panel(self, canvas, lanes_data, shoulders_data, connections_data, margin_x, panel_width, y_start, min_sta, max_sta):
+        """Draw lane configuration as realistic roadway plan view with tooltips
+
+        Layout:
+        - Centerline (yellow dashed) runs horizontally
+        - Lanes stack sequentially from centerline (no gaps regardless of priority numbers)
         - LEFT side lanes appear ABOVE centerline (opposite direction)
-        - RIGHT side lanes appear BELOW centerline (forward direction, increasing stationing)
-        - BOTH side lanes appear mirrored on BOTH sides of centerline
-        - Inside shoulders = closest to centerline/median
-        - Outside shoulders = on outer edge of road
-        - Priority determines stacking: P10 closest to CL, P20 next, etc.
+        - RIGHT side lanes appear BELOW centerline (forward direction)
+        - Gray shoulders hug outer lane edges
+        - Tooltips on hover for lanes and shoulders
         """
         canvas.create_text(margin_x, y_start, anchor='nw', text="Lane Configuration (Plan View)",
                          font=('Segoe UI', 11, 'bold'), fill='#1e3a8a')
         y_start += 25
 
-        # Count max priority levels on each side for lanes
-        right_priorities = set()
-        left_priorities = set()
-
-        for lane in lanes_data:
-            priority_level = lane['priority'] // 10
-            if lane['side'] == 'right':
-                right_priorities.add(priority_level)
-            elif lane['side'] == 'left':
-                left_priorities.add(priority_level)
-            else:  # both - appears on BOTH sides
-                right_priorities.add(priority_level)
-                left_priorities.add(priority_level)
-
-        # Count inside and outside shoulders per side
-        right_inside_shoulders = 0
-        right_outside_shoulders = 0
-        left_inside_shoulders = 0
-        left_outside_shoulders = 0
-
-        for shoulder in shoulders_data:
-            position = shoulder.get('position', 'outside')
-            side = shoulder['side']
-            if side == 'right' or side == 'both':
-                if position == 'inside':
-                    right_inside_shoulders = max(right_inside_shoulders, 1)
-                else:
-                    right_outside_shoulders = max(right_outside_shoulders, 1)
-            if side == 'left' or side == 'both':
-                if position == 'inside':
-                    left_inside_shoulders = max(left_inside_shoulders, 1)
-                else:
-                    left_outside_shoulders = max(left_outside_shoulders, 1)
-
-        max_right_lanes = max(right_priorities) + 1 if right_priorities else 0
-        max_left_lanes = max(left_priorities) + 1 if left_priorities else 0
+        # Initialize tracking for tooltips
+        self.lane_items = {}
+        self.shoulder_items = {}
+        self.connection_items = {}  # Track intersection/ramp lines for tooltips
+        self.current_highlight = None
 
         lane_height = 18
         shoulder_height = 12
 
-        # Panel height calculation:
-        # Above CL: left outside shoulder + left lanes + left inside shoulder
-        # Below CL: right inside shoulder + right lanes + right outside shoulder
-        total_above = (left_outside_shoulders * shoulder_height +
-                      max_left_lanes * lane_height +
-                      left_inside_shoulders * shoulder_height)
-        total_below = (right_inside_shoulders * shoulder_height +
-                      max_right_lanes * lane_height +
-                      right_outside_shoulders * shoulder_height)
-        panel_height = max(120, total_above + total_below + 50)
+        # Separate lanes by side and sort by priority
+        right_lanes = sorted([l for l in lanes_data if l['side'] in ['right', 'both']],
+                            key=lambda x: x['priority'])
+        left_lanes = sorted([l for l in lanes_data if l['side'] in ['left', 'both']],
+                           key=lambda x: x['priority'])
 
+        # Get unique priority values for each side (for counting max lanes)
+        right_priorities = sorted(set(l['priority'] for l in right_lanes))
+        left_priorities = sorted(set(l['priority'] for l in left_lanes))
+
+        max_right_slots = len(right_priorities)
+        max_left_slots = len(left_priorities)
+
+        # Check for outside and inside shoulders
+        has_right_outside_shoulder = any(s.get('position', 'outside') == 'outside' and s['side'] in ['right', 'both'] for s in shoulders_data)
+        has_left_outside_shoulder = any(s.get('position', 'outside') == 'outside' and s['side'] in ['left', 'both'] for s in shoulders_data)
+        has_right_inside_shoulder = any(s.get('position', 'outside') == 'inside' and s['side'] in ['right', 'both'] for s in shoulders_data)
+        has_left_inside_shoulder = any(s.get('position', 'outside') == 'inside' and s['side'] in ['left', 'both'] for s in shoulders_data)
+
+        # Panel height calculation - include both inside and outside shoulders
+        total_above = max_left_slots * lane_height + (shoulder_height if has_left_outside_shoulder else 0) + (shoulder_height if has_left_inside_shoulder else 0)
+        total_below = max_right_slots * lane_height + (shoulder_height if has_right_outside_shoulder else 0) + (shoulder_height if has_right_inside_shoulder else 0)
+        panel_height = max(120, total_above + total_below + 70)
+
+        # Light background for contrast with dark lanes
         canvas.create_rectangle(margin_x, y_start, margin_x + panel_width, y_start + panel_height,
-                              fill='#e5e7eb', outline='#666666', width=2)
+                              fill='#f5f5f5', outline='#666666', width=2)
 
-        # Centerline position - account for inside shoulders
-        centerline_y = y_start + left_outside_shoulders * shoulder_height + max_left_lanes * lane_height + left_inside_shoulders * shoulder_height + 25
+        # Centerline position (centered vertically in the road area)
+        centerline_y = y_start + (shoulder_height if has_left_outside_shoulder else 0) + (shoulder_height if has_left_inside_shoulder else 0) + max_left_slots * lane_height + 35
 
-        # Draw centerline (red dashed)
-        canvas.create_line(margin_x + 10, centerline_y, margin_x + panel_width - 10, centerline_y,
-                         fill='#dc2626', width=3, dash=(10, 5))
-        canvas.create_text(margin_x + 15, centerline_y, text="CL", font=('Consolas', 8, 'bold'),
-                         fill='#dc2626', anchor='w')
+        # Helper to convert station to x coordinate
+        def sta_to_x(station):
+            return margin_x + 10 + (station - min_sta) / (max_sta - min_sta) * (panel_width - 20)
 
-        # Helper to draw a bar (lane or shoulder)
-        def draw_bar(item, is_shoulder=False, shoulder_position='outside'):
-            x_start = margin_x + 10 + (item['begin'] - min_sta) / (max_sta - min_sta) * (panel_width - 20)
-            x_end = margin_x + 10 + (item['end'] - min_sta) / (max_sta - min_sta) * (panel_width - 20)
-
-            priority_level = item['priority'] // 10
-            bar_height = shoulder_height if is_shoulder else lane_height
-
-            if is_shoulder:
-                color = '#22c55e'  # Green for shoulders
-                pos_label = "In" if shoulder_position == 'inside' else "Out"
-                label = f"{pos_label} Shldr"
-            else:
-                color = self.get_lane_color(item.get('lane_type', 'thru'))
-                label = f"P{item['priority']} {item.get('lane_type', '')}"
-
-            side = item['side']
-
-            # Determine which sides to draw on
-            sides_to_draw = []
+        # Helper to get slot index for a lane at a specific station (0 = closest to centerline)
+        def get_slot_at_station(lane, station, side):
+            """Get the visual slot for this lane at a specific station based on active lanes"""
             if side == 'right':
-                sides_to_draw = ['right']
-            elif side == 'left':
-                sides_to_draw = ['left']
-            else:  # both
-                sides_to_draw = ['left', 'right']
+                active_lanes = [l for l in right_lanes if l['begin'] <= station <= l['end']]
+            else:
+                active_lanes = [l for l in left_lanes if l['begin'] <= station <= l['end']]
+
+            # Get unique priorities of active lanes, sorted
+            active_priorities = sorted(set(l['priority'] for l in active_lanes))
+
+            # Find this lane's slot (index in the sorted active priorities)
+            if lane['priority'] in active_priorities:
+                return active_priorities.index(lane['priority'])
+            return 0
+
+        # Helper to count active lanes at a station for a given side
+        def count_active_lanes_at_station(station, side):
+            if side == 'right':
+                active = [l for l in right_lanes if l['begin'] <= station <= l['end']]
+            else:
+                active = [l for l in left_lanes if l['begin'] <= station <= l['end']]
+            return len(set(l['priority'] for l in active))
+
+        # Helper to check if there's an inside shoulder at a station for a given side
+        def has_inside_shoulder_at_station(station, side):
+            for s in shoulders_data:
+                if s.get('position', 'outside') == 'inside':
+                    s_side = s['side']
+                    if (s_side == side or s_side == 'both') and s['begin'] <= station <= s['end']:
+                        return True
+            return False
+
+        # Collect all station change points (where lanes begin or end)
+        all_stations = set()
+        for lane in lanes_data:
+            all_stations.add(lane['begin'])
+            all_stations.add(lane['end'])
+        all_stations = sorted(all_stations)
+
+        # Draw lanes - segment by segment to handle per-station slot changes
+        for lane in lanes_data:
+            color = self.get_lane_color(lane.get('lane_type', 'thru'))
+            side = lane['side']
+            sides_to_draw = ['left', 'right'] if side == 'both' else [side]
 
             for draw_side in sides_to_draw:
-                if draw_side == 'right':
-                    # Right side: BELOW centerline
-                    if is_shoulder:
-                        if shoulder_position == 'inside':
-                            # Inside shoulder: between centerline and lanes
+                # Find all station points within this lane's range
+                lane_stations = [s for s in all_stations if lane['begin'] <= s <= lane['end']]
+                if lane['begin'] not in lane_stations:
+                    lane_stations.insert(0, lane['begin'])
+                if lane['end'] not in lane_stations:
+                    lane_stations.append(lane['end'])
+                lane_stations = sorted(set(lane_stations))
+
+                # Draw segment by segment
+                for i in range(len(lane_stations) - 1):
+                    seg_start = lane_stations[i]
+                    seg_end = lane_stations[i + 1]
+
+                    # Get slot at midpoint of segment
+                    mid_sta = (seg_start + seg_end) / 2
+                    slot = get_slot_at_station(lane, mid_sta, draw_side)
+
+                    x_start = sta_to_x(seg_start)
+                    x_end = sta_to_x(seg_end)
+
+                    # Check if there's an inside shoulder - lanes start after it
+                    inside_offset = shoulder_height if has_inside_shoulder_at_station(mid_sta, draw_side) else 0
+
+                    if draw_side == 'right':
+                        y_top = centerline_y + inside_offset + slot * lane_height
+                        y_bottom = y_top + lane_height
+                    else:
+                        y_bottom = centerline_y - inside_offset - slot * lane_height
+                        y_top = y_bottom - lane_height
+
+                    # Draw lane segment rectangle
+                    rect_id = canvas.create_rectangle(x_start, y_top, x_end, y_bottom,
+                                                     fill=color, outline='', width=0)
+
+                    # Store lane data for tooltip
+                    self.lane_items[rect_id] = {
+                        'lane_type': lane.get('lane_type', 'thru'),
+                        'priority': lane['priority'],
+                        'begin': lane['begin'],
+                        'end': lane['end'],
+                        'side': draw_side,
+                        'width': lane.get('width', 12.0)
+                    }
+
+        # Draw shoulders with dynamic positioning - segment by segment to follow lane edges
+        for shoulder in shoulders_data:
+            position = shoulder.get('position', 'outside')
+            side = shoulder['side']
+            color = '#6b7280'  # Gray
+
+            sides_to_draw = ['left', 'right'] if side == 'both' else [side]
+
+            for draw_side in sides_to_draw:
+                # Find all station points within this shoulder's range
+                shoulder_stations = [s for s in all_stations if shoulder['begin'] <= s <= shoulder['end']]
+                if shoulder['begin'] not in shoulder_stations:
+                    shoulder_stations.insert(0, shoulder['begin'])
+                if shoulder['end'] not in shoulder_stations:
+                    shoulder_stations.append(shoulder['end'])
+                shoulder_stations = sorted(set(shoulder_stations))
+
+                # Draw segment by segment
+                for i in range(len(shoulder_stations) - 1):
+                    seg_start = shoulder_stations[i]
+                    seg_end = shoulder_stations[i + 1]
+
+                    mid_sta = (seg_start + seg_end) / 2
+                    num_active = count_active_lanes_at_station(mid_sta, draw_side)
+
+                    x_start = sta_to_x(seg_start)
+                    x_end = sta_to_x(seg_end)
+
+                    # Check if there's an inside shoulder for offset calculation
+                    has_inside = has_inside_shoulder_at_station(mid_sta, draw_side)
+                    inside_offset = shoulder_height if has_inside else 0
+
+                    if position == 'outside':
+                        # Outside shoulder hugs the outermost lane (after inside shoulder + lanes)
+                        if draw_side == 'right':
+                            y_top = centerline_y + inside_offset + num_active * lane_height
+                            y_bottom = y_top + shoulder_height
+                        else:
+                            y_bottom = centerline_y - inside_offset - num_active * lane_height
+                            y_top = y_bottom - shoulder_height
+                    else:
+                        # Inside shoulder (median shoulder) - touches centerline
+                        if draw_side == 'right':
                             y_top = centerline_y
                             y_bottom = y_top + shoulder_height
                         else:
-                            # Outside shoulder: beyond all lanes
-                            y_top = centerline_y + right_inside_shoulders * shoulder_height + max_right_lanes * lane_height
-                            y_bottom = y_top + shoulder_height
-                    else:
-                        # Lanes stack from inside shoulder outward
-                        y_top = centerline_y + right_inside_shoulders * shoulder_height + priority_level * lane_height
-                        y_bottom = y_top + lane_height
-                else:  # left
-                    # Left side: ABOVE centerline
-                    if is_shoulder:
-                        if shoulder_position == 'inside':
-                            # Inside shoulder: between centerline and lanes
                             y_bottom = centerline_y
                             y_top = y_bottom - shoulder_height
-                        else:
-                            # Outside shoulder: beyond all lanes
-                            y_bottom = centerline_y - left_inside_shoulders * shoulder_height - max_left_lanes * lane_height
-                            y_top = y_bottom - shoulder_height
+
+                    rect_id = canvas.create_rectangle(x_start, y_top, x_end, y_bottom,
+                                                     fill=color, outline='', width=0)
+
+                    # Store shoulder data for tooltip
+                    self.shoulder_items[rect_id] = {
+                        'position': position,
+                        'side': draw_side,
+                        'begin': shoulder['begin'],
+                        'end': shoulder['end'],
+                        'width': shoulder.get('width', 0)
+                    }
+
+        # Draw yellow dashed centerline
+        canvas.create_line(margin_x + 10, centerline_y, margin_x + panel_width - 10, centerline_y,
+                         fill='#fbbf24', width=2, dash=(12, 6))
+
+        # Draw white dashed lane markings between lanes - segment by segment
+        # For each segment, draw markings between adjacent active lanes
+        for i in range(len(all_stations) - 1):
+            seg_start = all_stations[i]
+            seg_end = all_stations[i + 1]
+            mid_sta = (seg_start + seg_end) / 2
+
+            for side in ['right', 'left']:
+                # Get active lanes at this segment
+                if side == 'right':
+                    active_lanes = [l for l in right_lanes if l['begin'] <= mid_sta <= l['end']]
+                else:
+                    active_lanes = [l for l in left_lanes if l['begin'] <= mid_sta <= l['end']]
+
+                active_priorities = sorted(set(l['priority'] for l in active_lanes))
+
+                # Check for inside shoulder offset
+                inside_offset = shoulder_height if has_inside_shoulder_at_station(mid_sta, side) else 0
+
+                # Draw marking between each adjacent pair of lanes
+                for j in range(len(active_priorities) - 1):
+                    if side == 'right':
+                        marking_y = centerline_y + inside_offset + (j + 1) * lane_height
                     else:
-                        # Lanes stack from inside shoulder outward
-                        y_bottom = centerline_y - left_inside_shoulders * shoulder_height - priority_level * lane_height
-                        y_top = y_bottom - lane_height
+                        marking_y = centerline_y - inside_offset - (j + 1) * lane_height
 
-                # Draw the bar
-                canvas.create_rectangle(x_start, y_top, x_end, y_bottom,
-                                      fill=color, outline='#1e3a8a', width=1)
+                    canvas.create_line(sta_to_x(seg_start), marking_y, sta_to_x(seg_end), marking_y,
+                                     fill='white', width=1, dash=(8, 4))
 
-                # Add label on the bar
-                bar_width = x_end - x_start
-                bar_mid_y = (y_top + y_bottom) / 2
+        # Calculate road edges for connection markers (including inside shoulders)
+        road_top = centerline_y - (shoulder_height if has_left_inside_shoulder else 0) - max_left_slots * lane_height - (shoulder_height if has_left_outside_shoulder else 0)
+        road_bottom = centerline_y + (shoulder_height if has_right_inside_shoulder else 0) + max_right_slots * lane_height + (shoulder_height if has_right_outside_shoulder else 0)
 
-                if bar_width > 100:
-                    canvas.create_text((x_start + x_end) / 2, bar_mid_y,
-                                     text=label, font=('Consolas', 7, 'bold'), fill='white')
-                elif bar_width > 50:
-                    short_label = f"P{item['priority']}" if not is_shoulder else pos_label
-                    canvas.create_text((x_start + x_end) / 2, bar_mid_y,
-                                     text=short_label, font=('Consolas', 7), fill='white')
+        # Draw connection markers (vertical lines only)
+        for conn in connections_data:
+            conn_station = conn['station']
+            # Only draw if station is within visible range
+            if conn_station < min_sta or conn_station > max_sta:
+                print(f"DEBUG: Skipping connection '{conn.get('name', 'unknown')}' at station {conn_station} (out of range {min_sta}-{max_sta})")
+                continue
 
-        # Draw inside shoulders first (closest to centerline)
-        for shoulder in shoulders_data:
-            if shoulder.get('position', 'outside') == 'inside':
-                draw_bar(shoulder, is_shoulder=True, shoulder_position='inside')
+            x = sta_to_x(conn_station)
+            conn_type = conn.get('type', 'ramp')
 
-        # Draw lanes
-        for lane in lanes_data:
-            draw_bar(lane, is_shoulder=False)
+            # Lines extend from just above road to just below
+            line_top = road_top - 15
+            line_bottom = road_bottom + 15
 
-        # Draw outside shoulders last (furthest from centerline)
-        for shoulder in shoulders_data:
-            if shoulder.get('position', 'outside') == 'outside':
-                draw_bar(shoulder, is_shoulder=True, shoulder_position='outside')
+            print(f"DEBUG: Drawing {conn_type} '{conn.get('name', 'unknown')}' at station {conn_station}, x={x}")
 
-        # Add station markers at bottom
-        marker_y = y_start + panel_height - 15
+            if conn_type == 'intersection':
+                # Draw thicker line for easier hovering, with small marker at top
+                line_id = canvas.create_line(x, line_top, x, line_bottom,
+                                 fill='#10b981', width=3, dash=(6, 3))
+                # Store for tooltip
+                self.connection_items[line_id] = {
+                    'type': 'intersection',
+                    'name': conn['name'],
+                    'station': conn_station
+                }
+                # Small diamond marker at top of line for visibility
+                canvas.create_polygon(x, line_top - 8, x - 5, line_top, x, line_top + 8, x + 5, line_top,
+                                    fill='#10b981', outline='#047857', width=1)
+            else:
+                ramp_type = conn.get('ramp_type', 'entrance')
+                color = '#f59e0b' if ramp_type == 'entrance' else '#ef4444'
+                line_id = canvas.create_line(x, line_top, x, line_bottom,
+                                 fill=color, width=3, dash=(6, 3))
+                # Store for tooltip
+                self.connection_items[line_id] = {
+                    'type': 'ramp',
+                    'name': conn['name'],
+                    'station': conn_station,
+                    'ramp_type': ramp_type
+                }
+                # Small triangle marker - pointing up for entrance, down for exit
+                if ramp_type == 'entrance':
+                    canvas.create_polygon(x, line_top - 8, x - 5, line_top + 2, x + 5, line_top + 2,
+                                        fill=color, outline='#b45309', width=1)
+                else:
+                    canvas.create_polygon(x, line_bottom + 8, x - 5, line_bottom - 2, x + 5, line_bottom - 2,
+                                        fill=color, outline='#b91c1c', width=1)
+
+        # Station markers at bottom - larger and more readable
+        marker_y = y_start + panel_height - 20
         num_markers = 5
         for i in range(num_markers):
             x = margin_x + 10 + (panel_width - 20) * i / (num_markers - 1)
             sta = min_sta + (max_sta - min_sta) * i / (num_markers - 1)
-            canvas.create_line(x, marker_y - 5, x, marker_y + 5, fill='#666666', width=1)
-            canvas.create_text(x, marker_y + 8, text=self.format_station(str(sta)),
-                             font=('Consolas', 7), fill='black', anchor='n')
+            canvas.create_line(x, marker_y - 8, x, marker_y + 8, fill='#333333', width=2)
+            canvas.create_text(x, marker_y + 12, text=self.format_station(str(sta)),
+                             font=('Consolas', 10, 'bold'), fill='black', anchor='n')
 
-        # Direction labels
-        canvas.create_text(margin_x + panel_width - 10, centerline_y + 8,
-                         text="Right side (forward →)", font=('Consolas', 7),
-                         fill='#666666', anchor='ne')
-        canvas.create_text(margin_x + panel_width - 10, centerline_y - 8,
-                         text="Left side (← opposite)", font=('Consolas', 7),
-                         fill='#666666', anchor='se')
+        # Direction labels - larger
+        canvas.create_text(margin_x + panel_width - 10, centerline_y + 12,
+                         text="Right side (forward)", font=('Consolas', 9),
+                         fill='#444444', anchor='ne')
+        canvas.create_text(margin_x + panel_width - 10, centerline_y - 12,
+                         text="Left side (opposite)", font=('Consolas', 9),
+                         fill='#444444', anchor='se')
+
+        # Create tooltip window (initially hidden)
+        if not hasattr(self, 'visual_tooltip') or self.visual_tooltip is None:
+            self.visual_tooltip = tk.Toplevel(self.root)
+            self.visual_tooltip.wm_overrideredirect(True)
+            self.visual_tooltip.wm_withdraw()
+            self.tooltip_label = tk.Label(self.visual_tooltip, text="", bg='#ffffd0', relief='solid',
+                                         borderwidth=1, font=('Consolas', 9), justify='left', padx=5, pady=3)
+            self.tooltip_label.pack()
+        else:
+            self.visual_tooltip.wm_withdraw()
+
+        # Bind mouse events for tooltips (scroll-aware coordinates)
+        def on_motion(event):
+            # Convert to canvas coordinates (accounting for scroll)
+            canvas_x = canvas.canvasx(event.x)
+            canvas_y = canvas.canvasy(event.y)
+
+            # Find items under cursor (use slightly wider tolerance for thin lines)
+            items = canvas.find_overlapping(canvas_x - 4, canvas_y - 4, canvas_x + 4, canvas_y + 4)
+
+            found_item = None
+            item_data = None
+            item_type = None
+
+            # Check connection lines first (intersections/ramps), then shoulders, then lanes
+            for item in reversed(items):  # Check top items first (higher z-order)
+                if item in self.connection_items:
+                    found_item = item
+                    item_data = self.connection_items[item]
+                    item_type = 'connection'
+                    break
+                elif item in self.shoulder_items:
+                    found_item = item
+                    item_data = self.shoulder_items[item]
+                    item_type = 'shoulder'
+                    break
+                elif item in self.lane_items:
+                    found_item = item
+                    item_data = self.lane_items[item]
+                    item_type = 'lane'
+                    break
+
+            if found_item and item_data:
+                # Highlight the item
+                if self.current_highlight and self.current_highlight != found_item:
+                    try:
+                        canvas.itemconfig(self.current_highlight, outline='', width=0)
+                    except:
+                        pass
+                try:
+                    if item_type == 'connection':
+                        # For lines, make them thicker on hover
+                        canvas.itemconfig(found_item, width=4)
+                    else:
+                        canvas.itemconfig(found_item, outline='#00ffff', width=2)
+                except:
+                    pass
+                self.current_highlight = found_item
+
+                # Build tooltip text
+                if item_type == 'lane':
+                    lane_type_display = item_data['lane_type'].replace('_', ' ').title()
+                    tooltip_text = f"Type: {lane_type_display}\nPriority: P{item_data['priority']}\nStation: {self.format_station(str(item_data['begin']))} to {self.format_station(str(item_data['end']))}\nSide: {item_data['side'].title()}\nWidth: {item_data.get('width', 12.0):.1f} ft"
+                elif item_type == 'shoulder':
+                    tooltip_text = f"Shoulder ({item_data['position'].title()})\nStation: {self.format_station(str(item_data['begin']))} to {self.format_station(str(item_data['end']))}\nSide: {item_data['side'].title()}"
+                    if item_data.get('width'):
+                        tooltip_text += f"\nWidth: {item_data['width']:.1f} ft"
+                else:  # connection (intersection or ramp)
+                    conn_type = item_data.get('type', 'connection')
+                    if conn_type == 'intersection':
+                        tooltip_text = f"INTERSECTION\n{item_data['name']}\nStation: {self.format_station(str(item_data['station']))}"
+                    else:
+                        ramp_type = item_data.get('ramp_type', 'entrance')
+                        tooltip_text = f"RAMP ({ramp_type.upper()})\n{item_data['name']}\nStation: {self.format_station(str(item_data['station']))}"
+
+                self.tooltip_label.config(text=tooltip_text)
+
+                # Position tooltip near cursor (screen coordinates)
+                x = event.x_root + 15
+                y = event.y_root + 10
+                self.visual_tooltip.wm_geometry(f"+{x}+{y}")
+                self.visual_tooltip.wm_deiconify()
+                self.visual_tooltip.lift()
+            else:
+                # No item under cursor - hide tooltip and reset highlight
+                if self.current_highlight:
+                    try:
+                        # Reset line width for connection items, outline for others
+                        if self.current_highlight in self.connection_items:
+                            canvas.itemconfig(self.current_highlight, width=2)
+                        else:
+                            canvas.itemconfig(self.current_highlight, outline='', width=0)
+                    except:
+                        pass
+                    self.current_highlight = None
+                self.visual_tooltip.wm_withdraw()
+
+        def on_leave(event):
+            if self.current_highlight:
+                try:
+                    # Reset line width for connection items, outline for others
+                    if self.current_highlight in self.connection_items:
+                        canvas.itemconfig(self.current_highlight, width=2)
+                    else:
+                        canvas.itemconfig(self.current_highlight, outline='', width=0)
+                except:
+                    pass
+                self.current_highlight = None
+            self.visual_tooltip.wm_withdraw()
+
+        canvas.bind('<Motion>', on_motion)
+        canvas.bind('<Leave>', on_leave)
 
         return y_start + panel_height
 
     def get_lane_color(self, lane_type):
-        """Get color for lane type based on IHSDM lane types"""
-        colors = {
-            'thru': '#3b82f6',       # Blue for through lanes
-            'pass': '#8b5cf6',       # Purple for passing lanes
-            'climb': '#7c3aed',      # Violet for climb lanes
-            'left_turn': '#f59e0b',  # Orange for left turn lanes
-            'right_turn': '#eab308', # Yellow for right turn lanes
-            'taper': '#f97316',      # Dark orange for tapers
-            'park': '#6b7280',       # Gray for parking lanes
-            'bike': '#84cc16',       # Lime for bike lanes
-            'accel': '#06b6d4',      # Cyan for accel lanes
-            'decel': '#ec4899',      # Pink for decel lanes
-            'other': '#9ca3af',      # Light gray for other
-            'unspec': '#d1d5db'      # Lighter gray for unspecified
-        }
-        return colors.get(lane_type, '#3b82f6')  # Default to blue
+        """Get color for lane type - realistic asphalt colors"""
+        # Left turn lanes get a distinguishing color, all others are dark asphalt
+        if lane_type == 'left_turn':
+            return '#4a4a5a'  # Slightly blue-tinted dark for left turns
+        else:
+            return '#2d2d2d'  # Dark asphalt gray for all other lanes
 
     def draw_ramp_panel(self, canvas, ramps_data, margin_x, panel_width, y_start, min_sta, max_sta):
         """Draw ramp locations panel"""
