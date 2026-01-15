@@ -308,9 +308,9 @@ class IHSDMWisconsinHelper:
         self.notebook.add(self.visual_tab, text="  Visual View  ")
         self.setup_visual_tab()
 
-        # Tab 5: Calibration Scanner
+        # Tab 5: Evaluation Info
         self.cmf_tab = ttk.Frame(self.notebook)
-        self.notebook.add(self.cmf_tab, text="  Calibration Scanner  ")
+        self.notebook.add(self.cmf_tab, text="  Evaluation Info  ")
         self.setup_cmf_tab()
 
         # Tab 6: AADT Input
@@ -3014,11 +3014,11 @@ View horizontal and vertical alignment profiles for any highway alignment in you
         return y_start + panel_height
 
     # =========================================================================
-    # CMF SCANNER TAB
+    # EVALUATION INFO TAB
     # =========================================================================
 
     def setup_cmf_tab(self):
-        """Setup the CMF calibration factor scanner tab"""
+        """Setup the Evaluation Info tab (calibration factors and evaluation years)"""
         tab_frame = ttk.Frame(self.cmf_tab, padding="10")
         tab_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
         self.cmf_tab.columnconfigure(0, weight=1)
@@ -3029,7 +3029,7 @@ View horizontal and vertical alignment profiles for any highway alignment in you
         scan_frame.grid(row=0, column=0, columnspan=3, sticky=(tk.W, tk.E), pady=(0, 10))
 
         scan_btn = ttk.Button(scan_frame,
-                             text="Scan for CMF Calibration Factors",
+                             text="Scan for Evaluation Info",
                              command=self.scan_cmf_files)
         scan_btn.pack(side=tk.LEFT, padx=5)
 
@@ -3056,7 +3056,7 @@ View horizontal and vertical alignment profiles for any highway alignment in you
         hsb = ttk.Scrollbar(tree_frame, orient="horizontal")
 
         self.cmf_tree = ttk.Treeview(tree_frame,
-                                    columns=('Type', 'ID', 'Name', 'Evaluation', 'Calibration'),
+                                    columns=('Type', 'ID', 'Name', 'Evaluation', 'Years', 'Calibration'),
                                     show='tree headings',
                                     yscrollcommand=vsb.set,
                                     xscrollcommand=hsb.set)
@@ -3070,14 +3070,16 @@ View horizontal and vertical alignment profiles for any highway alignment in you
         self.cmf_tree.heading('ID', text='ID')
         self.cmf_tree.heading('Name', text='Name')
         self.cmf_tree.heading('Evaluation', text='Evaluation')
+        self.cmf_tree.heading('Years', text='Evaluation Years')
         self.cmf_tree.heading('Calibration', text='Calibration Factor')
 
         self.cmf_tree.column('#0', width=200, anchor='w')
         self.cmf_tree.column('Type', width=100, anchor='center')
         self.cmf_tree.column('ID', width=80, anchor='center')
-        self.cmf_tree.column('Name', width=300, anchor='w')
-        self.cmf_tree.column('Evaluation', width=120, anchor='w')
-        self.cmf_tree.column('Calibration', width=200, anchor='w')
+        self.cmf_tree.column('Name', width=250, anchor='w')
+        self.cmf_tree.column('Evaluation', width=100, anchor='w')
+        self.cmf_tree.column('Years', width=120, anchor='center')
+        self.cmf_tree.column('Calibration', width=150, anchor='w')
 
         # Grid layout
         self.cmf_tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
@@ -3162,6 +3164,7 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                 # Read the CMF file and extract line 27, column B
                 calibration = None
                 alignment_name = "Unknown"
+                eval_years = "Unknown"
 
                 try:
                     with open(cmf_path, 'r', encoding='utf-8') as f:
@@ -3185,12 +3188,46 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                 except Exception as e:
                     calibration = f"Error: {str(e)}"
 
+                # Parse evaluation years from result.xml file
+                try:
+                    # Look for evaluation.1.result.xml in same directory as CMF file
+                    result_xml_path = os.path.join(os.path.dirname(cmf_path), 'evaluation.1.result.xml')
+                    if os.path.exists(result_xml_path):
+                        import xml.etree.ElementTree as ET
+                        tree = ET.parse(result_xml_path)
+                        root = tree.getroot()
+
+                        # Search for evalStartYear and evalEndYear attributes
+                        start_year = None
+                        end_year = None
+
+                        # Look through all elements for these attributes
+                        for elem in root.iter():
+                            if 'evalStartYear' in elem.attrib and not start_year:
+                                start_year = elem.attrib['evalStartYear']
+                            if 'evalEndYear' in elem.attrib and not end_year:
+                                end_year = elem.attrib['evalEndYear']
+
+                            # Break early if we found both
+                            if start_year and end_year:
+                                break
+
+                        if start_year and end_year:
+                            if start_year == end_year:
+                                eval_years = start_year
+                            else:
+                                eval_years = f"{start_year}-{end_year}"
+                except Exception as e:
+                    # Silently fail for eval years parsing
+                    pass
+
                 # Store data
                 cmf_entry = {
                     'type': alignment_type,
                     'id': alignment_id,
                     'name': alignment_name,
                     'evaluation': eval_folder if eval_folder else 'Unknown',
+                    'years': eval_years,
                     'calibration': calibration if calibration else 'Not found',
                     'path': cmf_path
                 }
@@ -3229,32 +3266,32 @@ View horizontal and vertical alignment profiles for any highway alignment in you
         # Add highways
         if highways:
             hw_parent = self.cmf_tree.insert('', 'end', text=f'HIGHWAYS ({len(highways)})',
-                                            values=('', '', '', '', ''))
+                                            values=('', '', '', '', '', ''))
             for hw in sorted(highways, key=lambda x: x['id']):
                 self.cmf_tree.insert(hw_parent, 'end',
                                    text=hw['id'],
                                    values=(hw['type'], hw['id'], hw['name'],
-                                         hw['evaluation'], hw['calibration']))
+                                         hw['evaluation'], hw['years'], hw['calibration']))
 
         # Add intersections
         if intersections:
             int_parent = self.cmf_tree.insert('', 'end', text=f'INTERSECTIONS ({len(intersections)})',
-                                             values=('', '', '', '', ''))
+                                             values=('', '', '', '', '', ''))
             for i in sorted(intersections, key=lambda x: x['id']):
                 self.cmf_tree.insert(int_parent, 'end',
                                    text=i['id'],
                                    values=(i['type'], i['id'], i['name'],
-                                         i['evaluation'], i['calibration']))
+                                         i['evaluation'], i['years'], i['calibration']))
 
         # Add ramp terminals
         if ramps:
             ramp_parent = self.cmf_tree.insert('', 'end', text=f'RAMP TERMINALS ({len(ramps)})',
-                                              values=('', '', '', '', ''))
+                                              values=('', '', '', '', '', ''))
             for r in sorted(ramps, key=lambda x: x['id']):
                 self.cmf_tree.insert(ramp_parent, 'end',
                                    text=r['id'],
                                    values=(r['type'], r['id'], r['name'],
-                                         r['evaluation'], r['calibration']))
+                                         r['evaluation'], r['years'], r['calibration']))
 
     def export_cmf_to_excel(self):
         """Export CMF data to Excel"""
@@ -3271,7 +3308,7 @@ View horizontal and vertical alignment profiles for any highway alignment in you
         filename = filedialog.asksaveasfilename(
             defaultextension=".xlsx",
             filetypes=[("Excel files", "*.xlsx"), ("All files", "*.*")],
-            initialfile="CMF_Calibration_Factors.xlsx"
+            initialfile="Evaluation_Info.xlsx"
         )
 
         if not filename:
@@ -3283,10 +3320,10 @@ View horizontal and vertical alignment profiles for any highway alignment in you
 
             wb = Workbook()
             ws = wb.active
-            ws.title = "CMF Calibration Factors"
+            ws.title = "Evaluation Info"
 
             # Headers
-            headers = ['Type', 'ID', 'Name', 'Evaluation', 'Calibration Factor', 'File Path']
+            headers = ['Type', 'ID', 'Name', 'Evaluation', 'Evaluation Years', 'Calibration Factor', 'File Path']
             ws.append(headers)
 
             # Style headers
@@ -3304,6 +3341,7 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                     entry['id'],
                     entry['name'],
                     entry['evaluation'],
+                    entry['years'],
                     entry['calibration'],
                     entry['path']
                 ])
