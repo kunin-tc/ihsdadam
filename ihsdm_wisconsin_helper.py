@@ -656,11 +656,17 @@ Original script by Adam Engbring (aengbring@hntb.com)
         desc_frame = ttk.LabelFrame(left_frame, text="Appendix Generator", padding="10")
         desc_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
-        desc_text = """Combines evaluation.1.report.pdf files into a single PDF.
+        desc_text = """IMPORTANT: Before using this tool, generate PDF reports in IHSDM:
+  1. Open each alignment evaluation in IHSDM
+  2. Click "Show PDF" on the evaluation running
+     (or go to: Show Report → PDF → Multipage)
+  3. Save as evaluation.1.report.pdf in the evaluation folder
+
+This tool combines evaluation.1.report.pdf files into a single PDF.
 Select which alignments to include below."""
         desc_label = tk.Label(desc_frame,
                              text=desc_text,
-                             font=('Segoe UI', 10),
+                             font=('Segoe UI', 9),
                              justify=tk.LEFT,
                              bg=self.colors['bg_light'])
         desc_label.pack(anchor=tk.W)
@@ -1576,14 +1582,37 @@ View horizontal and vertical alignment profiles for any highway alignment in you
 
         try:
             project_dir = Path(project_path)
+            self.log_appendix(f"Searching in: {project_dir}")
+            self.log_appendix(f"Looking for pattern: **/e*/evaluation.*.report.pdf")
+            self.log_appendix("")
+
             # Search for all evaluation report PDFs (e1, e2, e3, etc.)
             pdf_files = list(project_dir.glob("**/e*/evaluation.*.report.pdf"))
 
-            if not pdf_files:
-                # Fallback to old pattern
-                pdf_files = list(project_dir.glob("**/evaluation.*.report.pdf"))
+            self.log_appendix(f"Found {len(pdf_files)} files with e*/ pattern")
 
             if not pdf_files:
+                # Fallback to old pattern
+                self.log_appendix("Trying fallback pattern: **/evaluation.*.report.pdf")
+                pdf_files = list(project_dir.glob("**/evaluation.*.report.pdf"))
+                self.log_appendix(f"Found {len(pdf_files)} files with fallback pattern")
+
+            if not pdf_files:
+                # Try even broader pattern for debugging
+                self.log_appendix("")
+                self.log_appendix("Trying broader pattern: **/*.pdf")
+                all_pdfs = list(project_dir.glob("**/*.pdf"))
+                self.log_appendix(f"Found {len(all_pdfs)} total PDF files in project")
+
+                if all_pdfs:
+                    self.log_appendix("")
+                    self.log_appendix("Sample PDF files found:")
+                    for pdf in all_pdfs[:10]:
+                        self.log_appendix(f"  {pdf.relative_to(project_dir)}")
+                    if len(all_pdfs) > 10:
+                        self.log_appendix(f"  ... and {len(all_pdfs) - 10} more")
+
+                self.log_appendix("")
                 self.log_appendix("No evaluation.*.report.pdf files found.")
                 messagebox.showwarning("No Files", "No evaluation report PDFs found in the project.")
                 return
