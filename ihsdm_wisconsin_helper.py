@@ -4825,31 +4825,44 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
             if section['calculated_aadt']:
                 # Extract relative path components from stored path
                 stored_path = Path(section['xml_file'])
-                # Get highway folder name (e.g., h2, h27) and xml filename
+                # Get highway folder name (e.g., h2, h27)
                 highway_folder = stored_path.parent.name  # e.g., "h2"
-                xml_filename = stored_path.name  # e.g., "highway.1.xml"
 
-                # Try to find the XML file in current project
-                # First try direct path (project/h2/highway.1.xml)
-                xml_file = project_dir / highway_folder / xml_filename
+                # Find the highway folder in current project and get highest version XML
+                xml_file = None
+
+                # Try direct path first (project/h2/)
+                highway_dir = project_dir / highway_folder
+                if highway_dir.exists():
+                    highway_xmls = list(highway_dir.glob("highway.*.xml"))
+                    if not highway_xmls:
+                        highway_xmls = list(highway_dir.glob("highway.xml"))
+                    if highway_xmls:
+                        xml_file = sorted(highway_xmls)[-1]  # Use highest version
 
                 # If not found, search in interchange containers (c*/h*)
-                if not xml_file.exists():
-                    found = False
+                if xml_file is None:
                     for c_dir in project_dir.glob('c*'):
-                        potential = c_dir / highway_folder / xml_filename
-                        if potential.exists():
-                            xml_file = potential
-                            found = True
-                            break
-                    if not found:
-                        # Try searching anywhere in project
-                        matches = list(project_dir.glob(f'**/{highway_folder}/{xml_filename}'))
-                        if matches:
-                            xml_file = matches[0]
-                        else:
-                            path_errors.append(f"{highway_folder}/{xml_filename}")
-                            continue
+                        potential_dir = c_dir / highway_folder
+                        if potential_dir.exists():
+                            highway_xmls = list(potential_dir.glob("highway.*.xml"))
+                            if not highway_xmls:
+                                highway_xmls = list(potential_dir.glob("highway.xml"))
+                            if highway_xmls:
+                                xml_file = sorted(highway_xmls)[-1]
+                                break
+
+                # Last resort: search anywhere in project for this highway folder
+                if xml_file is None:
+                    matches = list(project_dir.glob(f'**/{highway_folder}/highway.*.xml'))
+                    if not matches:
+                        matches = list(project_dir.glob(f'**/{highway_folder}/highway.xml'))
+                    if matches:
+                        # Group by parent dir and pick highest version from first match location
+                        xml_file = sorted(matches)[-1]
+                    else:
+                        path_errors.append(f"{highway_folder}")
+                        continue
 
                 xml_file_str = str(xml_file)
                 if xml_file_str not in file_sections:
@@ -4881,6 +4894,7 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
 
         updated_count = 0
         error_count = 0
+        changes_list = []  # Track actual changes: (alignment, start_sta, end_sta, old_val, new_val)
 
         for xml_file, sections in file_sections.items():
             try:
@@ -4900,15 +4914,39 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                     # Pattern matches: <AnnualAveDailyTraffic startStation="X" endStation="Y" adtYear="Z" adtRate="W" />
                     import re
 
+                    # Helper to create flexible decimal pattern (22150.00 matches 22150.0, 22150, etc.)
+                    def station_pattern(sta_str):
+                        try:
+                            val = float(sta_str)
+                            # Get integer part
+                            int_part = int(val)
+                            frac_part = val - int_part
+                            if frac_part == 0:
+                                # Could be "22150", "22150.0", "22150.00", etc.
+                                return rf'{int_part}(?:\.0+)?'
+                            else:
+                                # Has actual decimal - match the numeric value with flexible trailing zeros
+                                # e.g., 28925.632 should match 28925.632 or 28925.6320
+                                decimal_str = str(val).split('.')[1].rstrip('0') or '0'
+                                return rf'{int_part}\.{decimal_str}0*'
+                        except:
+                            return re.escape(sta_str)
+
+                    start_pattern = station_pattern(start_sta)
+                    end_pattern = station_pattern(end_sta)
+
                     # Flexible pattern that matches the element with these station values
                     pattern = (
                         r'(<AnnualAveDailyTraffic\s+'
-                        rf'startStation="{re.escape(start_sta)}"\s+'
-                        rf'endStation="{re.escape(end_sta)}"\s*'
+                        rf'startStation="{start_pattern}"\s+'
+                        rf'endStation="{end_pattern}"\s*'
                         r'[^>]*?adtRate=")(\d+)(")'
                     )
 
+                    # Track old value for change detection
+                    old_value = [None]
                     def replace_aadt(match):
+                        old_value[0] = match.group(2)
                         return match.group(1) + new_aadt + match.group(3)
 
                     content, count = re.subn(pattern, replace_aadt, content)
@@ -4917,14 +4955,23 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                         # Try alternative attribute order
                         pattern2 = (
                             r'(<AnnualAveDailyTraffic\s+[^>]*?'
-                            rf'startStation="{re.escape(start_sta)}"[^>]*?'
-                            rf'endStation="{re.escape(end_sta)}"[^>]*?'
+                            rf'startStation="{start_pattern}"[^>]*?'
+                            rf'endStation="{end_pattern}"[^>]*?'
                             r'adtRate=")(\d+)(")'
                         )
                         content, count = re.subn(pattern2, replace_aadt, content)
 
                     if count > 0:
-                        updated_count += 1
+                        # Only count as updated if value actually changed
+                        if old_value[0] and old_value[0] != new_aadt:
+                            updated_count += 1
+                            changes_list.append((
+                                section['roadway_title'],
+                                self.format_station(start_sta),
+                                self.format_station(end_sta),
+                                old_value[0],
+                                new_aadt
+                            ))
 
                 # Write back if changes were made
                 if content != original_content:
@@ -4942,8 +4989,16 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
             messagebox.showwarning("Partial Success",
                                   f"Updated {updated_count} values with {error_count} errors.\n"
                                   "Check the console for error details.")
+        elif updated_count == 0:
+            messagebox.showinfo("No Changes", "No AADT values needed updating - all values already match.")
         else:
-            messagebox.showinfo("Success", f"Successfully updated {updated_count} AADT values!")
+            # Build detailed change list
+            changes_text = f"Updated {updated_count} AADT values:\n\n"
+            for alignment, start, end, old_val, new_val in changes_list[:20]:  # Limit to first 20
+                changes_text += f"  {alignment}\n    {start} to {end}: {old_val} → {new_val}\n"
+            if len(changes_list) > 20:
+                changes_text += f"\n  ... and {len(changes_list) - 20} more changes"
+            messagebox.showinfo("Success", changes_text)
 
     def save_aadt_mapping_csv(self):
         """Save AADT mapping progress to CSV for later resumption"""
@@ -5007,7 +5062,14 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
             messagebox.showerror("Error", f"Error saving mapping: {str(e)}")
 
     def load_aadt_mapping_csv(self):
-        """Load AADT mapping progress from a previously saved CSV"""
+        """Load AADT mapping progress from a previously saved CSV - only loads forecast IDs"""
+        # Check if project has been scanned
+        if not self.aadt_sections:
+            messagebox.showwarning("Scan Required",
+                "Please scan the project first (Step 3) before loading a mapping.\n\n"
+                "This ensures AADT values come from the actual XML files.")
+            return
+
         file_path = filedialog.askopenfilename(
             title="Load AADT Mapping Progress",
             filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
@@ -5017,47 +5079,67 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
             return
 
         try:
+            # Helper to normalize station values for matching (handle decimal variations)
+            def normalize_station(sta):
+                try:
+                    return float(sta)
+                except:
+                    return sta
+
+            # Build lookup from existing scanned sections
+            section_lookup = {}
+            for i, section in enumerate(self.aadt_sections):
+                key = (
+                    section['roadway_title'],
+                    normalize_station(section['start_station']),
+                    normalize_station(section['end_station'])
+                )
+                section_lookup[key] = i
+
+            matched_count = 0
+            unmatched_rows = []
+            reviewed_alignments = set()
+
             with open(file_path, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
 
-                loaded_sections = []
-                reviewed_alignments = set()
-
                 for row in reader:
-                    section = {
-                        'roadway_title': row.get('Roadway_Title', ''),
-                        'section_num': int(row.get('Section_Num', 0)),
-                        'start_station': row.get('Start_Station', ''),
-                        'end_station': row.get('End_Station', ''),
-                        'year': row.get('Year', ''),
-                        'current_aadt': row.get('Current_AADT', ''),
-                        'id1': row.get('ID1', ''),
-                        'sign1': row.get('Sign1', '+'),
-                        'id2': row.get('ID2', ''),
-                        'sign2': row.get('Sign2', '+'),
-                        'id3': row.get('ID3', ''),
-                        'sign3': row.get('Sign3', '+'),
-                        'id4': row.get('ID4', ''),
-                        'sign4': row.get('Sign4', '+'),
-                        'id5': row.get('ID5', ''),
-                        'sign5': row.get('Sign5', '+'),
-                        'id6': row.get('ID6', ''),
-                        'sign6': row.get('Sign6', '+'),
-                        'calculated_aadt': row.get('Calculated_AADT', ''),
-                        'highway_dir': row.get('Highway_Dir', ''),
-                        'xml_file': row.get('XML_File', '')
-                    }
-                    loaded_sections.append(section)
+                    # Build key to match with scanned sections
+                    key = (
+                        row.get('Roadway_Title', ''),
+                        normalize_station(row.get('Start_Station', '')),
+                        normalize_station(row.get('End_Station', ''))
+                    )
 
-                    if row.get('Reviewed', 'No') == 'Yes':
-                        reviewed_alignments.add(section['roadway_title'])
+                    if key in section_lookup:
+                        idx = section_lookup[key]
+                        # Only update forecast ID fields - keep current_aadt from scan
+                        self.aadt_sections[idx]['id1'] = row.get('ID1', '')
+                        self.aadt_sections[idx]['sign1'] = row.get('Sign1', '+')
+                        self.aadt_sections[idx]['id2'] = row.get('ID2', '')
+                        self.aadt_sections[idx]['sign2'] = row.get('Sign2', '+')
+                        self.aadt_sections[idx]['id3'] = row.get('ID3', '')
+                        self.aadt_sections[idx]['sign3'] = row.get('Sign3', '+')
+                        self.aadt_sections[idx]['id4'] = row.get('ID4', '')
+                        self.aadt_sections[idx]['sign4'] = row.get('Sign4', '+')
+                        self.aadt_sections[idx]['id5'] = row.get('ID5', '')
+                        self.aadt_sections[idx]['sign5'] = row.get('Sign5', '+')
+                        self.aadt_sections[idx]['id6'] = row.get('ID6', '')
+                        self.aadt_sections[idx]['sign6'] = row.get('Sign6', '+')
+                        matched_count += 1
 
-            if not loaded_sections:
-                messagebox.showwarning("No Data", "No sections found in the CSV file.")
+                        if row.get('Reviewed', 'No') == 'Yes':
+                            reviewed_alignments.add(row.get('Roadway_Title', ''))
+                    else:
+                        unmatched_rows.append(f"{row.get('Roadway_Title', '')} @ {row.get('Start_Station', '')}")
+
+            if matched_count == 0:
+                messagebox.showwarning("No Matches",
+                    "No CSV rows matched the scanned sections.\n\n"
+                    "Make sure the CSV was saved from the same project structure.")
                 return
 
-            # Update state with loaded data
-            self.aadt_sections = loaded_sections
+            # Update reviewed alignments
             self.aadt_reviewed_alignments = reviewed_alignments
 
             # Rebuild tree view with loaded data
@@ -5107,12 +5189,18 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
             align_count = len(alignments)
             reviewed_count = len(reviewed_alignments)
 
-            self.aadt_scan_status.set(f"Loaded {section_count} sections across {align_count} alignments ({reviewed_count} reviewed)")
-            self.status_var.set(f"Loaded mapping from {os.path.basename(file_path)}")
+            self.aadt_scan_status.set(f"Merged IDs for {matched_count} sections ({reviewed_count} alignments reviewed)")
+            self.status_var.set(f"Loaded forecast IDs from {os.path.basename(file_path)}")
+
+            unmatched_msg = ""
+            if unmatched_rows:
+                unmatched_msg = f"\n\n{len(unmatched_rows)} rows in CSV did not match scanned sections."
+
             messagebox.showinfo("Load Complete",
-                              f"Loaded {section_count} sections across {align_count} alignments.\n"
-                              f"{reviewed_count} alignments marked as reviewed.\n\n"
-                              f"Note: You still need to load the forecast workbook (Step 2) to calculate AADT values.")
+                              f"Merged forecast IDs for {matched_count} sections.\n"
+                              f"{reviewed_count} alignments marked as reviewed.\n"
+                              f"Current AADT values preserved from XML scan.{unmatched_msg}\n\n"
+                              f"Note: Load the forecast workbook (Step 2) to calculate AADT values.")
 
         except Exception as e:
             messagebox.showerror("Error", f"Error loading mapping: {str(e)}")
