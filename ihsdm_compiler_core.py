@@ -9,8 +9,48 @@ Date: 2025-12-17
 
 import os
 import csv
+import xml.etree.ElementTree as ET
 from collections import Counter
 from openpyxl import Workbook, load_workbook
+
+
+# =============================================================================
+# XML EVALUATION NAME EXTRACTION
+# =============================================================================
+
+def get_evaluation_title_from_xml(eval_dir):
+    """Extract evaluationTitle from evaluation.1.result.xml in the given directory.
+
+    Args:
+        eval_dir: Directory containing the evaluation files (e.g., .../h1/e1/)
+
+    Returns:
+        The evaluationTitle attribute value, or "Unknown" if not found.
+    """
+    xml_path = os.path.join(eval_dir, "evaluation.1.result.xml")
+
+    if not os.path.exists(xml_path):
+        return "Unknown"
+
+    try:
+        tree = ET.parse(xml_path)
+        root = tree.getroot()
+
+        # Try with namespace first
+        ns = "{http://www.ihsdm.org/schema/Highway-1.0}"
+        eval_info = root.find(f".//{ns}EvaluationInfo")
+
+        # Try without namespace if not found
+        if eval_info is None:
+            eval_info = root.find(".//EvaluationInfo")
+
+        if eval_info is not None:
+            return eval_info.get("evaluationTitle", "Unknown")
+
+        return "Unknown"
+    except Exception as e:
+        print(f"Error reading evaluation XML: {e}")
+        return "Unknown"
 
 
 # =============================================================================
@@ -32,26 +72,26 @@ INT_SEVERITY_C = 0.667485    # 66.75% possible injury (intersection/ramp)
 # OUTPUT HEADERS
 # =============================================================================
 
-HIGHWAY_HEADER = ["Segment", "Segment #", "Year", "AADT", "Start_Location", "Type",
+HIGHWAY_HEADER = ["Evaluation Name", "Segment", "Segment #", "Year", "AADT", "Start_Location", "Type",
                   "Length miles", "Total K", "Total A", "Total B", "Total C", "Total PD", "FI", "PDO"]
 
-INTERSECTION_HEADER = ["Inter. #", "Intersection Type", "Title", "Year", "Major AADT", "Minor AADT",
+INTERSECTION_HEADER = ["Evaluation Name", "Inter. #", "Intersection Type", "Title", "Year", "Major AADT", "Minor AADT",
                        "Fatal (K) Crashes", "Incapacitating Injury (A) Crashes",
                        "Non-Incapacitating Injury (B) Crashes", "Possible Injury (C) Crashes",
                        "No Injury (O) Crashes", "Fatal and Injury (FI) Crashes"]
 
-RAMP_TERMINAL_HEADER = ["Ramp Terminal #", "Ramp Terminal Type", "Title", "Year", "Exit AADT", "Entrance AADT",
+RAMP_TERMINAL_HEADER = ["Evaluation Name", "Ramp Terminal #", "Ramp Terminal Type", "Title", "Year", "Exit AADT", "Entrance AADT",
                         "Fatal (K) Crashes", "Incapacitating Injury (A) Crashes",
                         "Non-Incapacitating Injury (B) Crashes", "Possible Injury (C) Crashes",
                         "No Injury (O) Crashes", "Fatal and Injury (FI) Crashes"]
 
 # Site set headers - use Calibrated FI as the FI source for KABC calculation
-SITESET_INT_HEADER = ["Inter. #", "Intersection Type", "Title", "Year", "Major AADT", "Minor AADT",
+SITESET_INT_HEADER = ["Evaluation Name", "Inter. #", "Intersection Type", "Title", "Year", "Major AADT", "Minor AADT",
                       "Fatal (K) Crashes", "Incapacitating Injury (A) Crashes",
                       "Non-Incapacitating Injury (B) Crashes", "Possible Injury (C) Crashes",
                       "No Injury (O) Crashes", "Calibrated FI Predicted Crashes Per Year"]
 
-SITESET_RAMP_HEADER = ["Ramp Terminal #", "Ramp Terminal Type", "Title", "Year", "Exit AADT", "Entrance AADT",
+SITESET_RAMP_HEADER = ["Evaluation Name", "Ramp Terminal #", "Ramp Terminal Type", "Title", "Year", "Exit AADT", "Entrance AADT",
                        "Fatal (K) Crashes", "Incapacitating Injury (A) Crashes",
                        "Non-Incapacitating Injury (B) Crashes", "Possible Injury (C) Crashes",
                        "No Injury (O) Crashes", "Calibrated FI Predicted Crashes Per Year"]
@@ -85,6 +125,34 @@ def remove_duplicates(rows):
             unique_rows.append(row)
 
     return unique_rows, duplicates
+
+
+def deduplicate_by_title(rows, title_column_index=3):
+    """Remove duplicate rows by title, keeping first occurrence.
+
+    Used for intersection deduplication where the same intersection may appear
+    in multiple evaluation files.
+
+    Args:
+        rows: List of data rows
+        title_column_index: Column index containing the title (default 3 for Intersection)
+                           With "Evaluation Name" at index 0, Title is at index 3
+
+    Returns:
+        List of unique rows (first occurrence of each title kept)
+    """
+    seen_titles = set()
+    unique_rows = []
+    for row in rows:
+        if len(row) > title_column_index:
+            title = row[title_column_index]
+            if title and title not in seen_titles:
+                seen_titles.add(title)
+                unique_rows.append(row)
+        else:
+            # Keep rows that don't have enough columns (header rows, etc.)
+            unique_rows.append(row)
+    return unique_rows
 
 
 # =============================================================================
@@ -137,8 +205,14 @@ def should_process_highway_row(row):
     return True
 
 
-def extract_highway_row_data(row, debug=False):
-    """Extract relevant columns from highway row based on facility type."""
+def extract_highway_row_data(row, eval_name="", debug=False):
+    """Extract relevant columns from highway row based on facility type.
+
+    Args:
+        row: The CSV row data
+        eval_name: Evaluation name to prepend to the output row
+        debug: Enable debug output
+    """
     filtered_row = None
 
     try:
@@ -207,7 +281,7 @@ def extract_highway_row_data(row, debug=False):
                             row[78], row[79], row[80], row[81], row[82], row[83], row[84]]
             if debug: print("Classified as special evaluation")
 
-        elif "" in row[0] and any(xsec in row[5] for xsec in ["4U", "6U", "2U", "4D", "6D", "2O", "4O", "3O", "5T", "3T"]):
+        elif "" in row[0] and any(xsec in row[5] for xsec in ["4U", "6U", "8U", "10U", "2U", "4D", "6D", "8D", "10D", "2O", "4O", "3O", "5T", "3T"]):
             try:
                 filtered_row = [row[0], row[1], row[2], row[3], row[4], row[5], row[9],
                                 row[83], row[84], row[85], row[86], row[87], row[88], row[89]]
@@ -265,6 +339,10 @@ def extract_highway_row_data(row, debug=False):
         print(f"Error extracting highway row data: {e}")
         return None
 
+    # Prepend evaluation name to the row
+    if filtered_row is not None:
+        filtered_row = [eval_name] + filtered_row
+
     return filtered_row
 
 
@@ -272,8 +350,16 @@ def extract_highway_row_data(row, debug=False):
 # INTERSECTION & RAMP TERMINAL EXTRACTION
 # =============================================================================
 
-def extract_by_headers_from_csv(file_path, target_headers, first_file=False, multi_year=True):
-    """Extract rows from CSV by matching column headers."""
+def extract_by_headers_from_csv(file_path, target_headers, first_file=False, multi_year=True, eval_name=""):
+    """Extract rows from CSV by matching column headers.
+
+    Args:
+        file_path: Path to the CSV file
+        target_headers: List of headers to extract
+        first_file: If True, include header row in output
+        multi_year: If True, extract 20 years of data
+        eval_name: Evaluation name to prepend to each data row
+    """
     extracted_rows = []
     try:
         with open(file_path, 'r', newline='') as csvfile:
@@ -294,7 +380,7 @@ def extract_by_headers_from_csv(file_path, target_headers, first_file=False, mul
                     rows_to_extract = lines[6:26]  # Skip header, just data
             else:
                 if first_file:
-                    rows_to_extract = lines[5:6]  # Header only
+                    rows_to_extract = lines[5:7]  # Header + first data row
                 else:
                     rows_to_extract = [lines[6]]  # Single data row
 
@@ -305,6 +391,7 @@ def extract_by_headers_from_csv(file_path, target_headers, first_file=False, mul
                     header_index_map[header].append(idx)
 
             # Extract data
+            is_first_row = True
             for row in rows_to_extract:
                 if len(row) < len(header_row):
                     continue
@@ -323,6 +410,14 @@ def extract_by_headers_from_csv(file_path, target_headers, first_file=False, mul
                         indices = header_index_map[header]
                         for idx in indices:
                             extracted_row.append(row[idx] if idx < len(row) else "")
+
+                # Prepend "Evaluation Name" header text for first row (header),
+                # or actual eval_name value for data rows
+                if first_file and is_first_row:
+                    extracted_row = ["Evaluation Name"] + extracted_row
+                    is_first_row = False
+                else:
+                    extracted_row = [eval_name] + extracted_row
                 extracted_rows.append(extracted_row)
 
     except Exception as e:
@@ -331,7 +426,7 @@ def extract_by_headers_from_csv(file_path, target_headers, first_file=False, mul
     return extracted_rows
 
 
-def extract_site_set_data(file_path, target_headers, section_marker, first_file=False):
+def extract_site_set_data(file_path, target_headers, section_marker, first_file=False, eval_name=""):
     """Extract data from site set CSV files.
 
     Site set CSVs have multiple sections, each with a marker line like
@@ -342,6 +437,7 @@ def extract_site_set_data(file_path, target_headers, section_marker, first_file=
         target_headers: List of headers to extract
         section_marker: Marker text to identify sections (e.g., "USA Intersection Debug Result")
         first_file: If True, include header row in output
+        eval_name: Evaluation name to prepend to each data row
 
     Returns:
         List of extracted rows
@@ -378,6 +474,8 @@ def extract_site_set_data(file_path, target_headers, section_marker, first_file=
                                     indices = header_index_map[header]
                                     for idx in indices:
                                         extracted_row.append(header_row[idx] if idx < len(header_row) else "")
+                            # Prepend "Evaluation Name" header text to header row
+                            extracted_row = ["Evaluation Name"] + extracted_row
                             extracted_rows.append(extracted_row)
                             include_header = False
 
@@ -393,6 +491,8 @@ def extract_site_set_data(file_path, target_headers, section_marker, first_file=
                                         indices = header_index_map[header]
                                         for idx in indices:
                                             extracted_row.append(data_row[idx] if idx < len(data_row) else "")
+                                # Prepend evaluation name to data row
+                                extracted_row = [eval_name] + extracted_row
                                 extracted_rows.append(extracted_row)
 
                         i += 3  # Skip marker, header, and data rows
@@ -572,14 +672,15 @@ def fill_missing_highway_values(excel_path):
         if "Highway" in workbook.sheetnames:
             sheet = workbook["Highway"]
             for row in sheet.iter_rows(min_row=2):  # Skip header
-                if len(row) > 12:
-                    cell_k = row[7]
-                    cell_a = row[8]
-                    cell_b = row[9]
-                    cell_c = row[10]
-                    cell_pd = row[11]
-                    cell_fi = row[12]
-                    cell_pdo = row[13]
+                if len(row) > 13:
+                    # Column indices shifted by 1 due to "Evaluation Name" in column 0
+                    cell_k = row[8]
+                    cell_a = row[9]
+                    cell_b = row[10]
+                    cell_c = row[11]
+                    cell_pd = row[12]
+                    cell_fi = row[13]
+                    cell_pdo = row[14]
 
                     if cell_fi.value:
                         fi_value = float(cell_fi.value)
@@ -609,15 +710,16 @@ def fill_missing_intersection_values(excel_path, sheet_name="Intersection"):
         if sheet_name in workbook.sheetnames:
             sheet = workbook[sheet_name]
             for row in sheet.iter_rows(min_row=2):
-                if len(row) > 12:
-                    cell_f = row[5]   # Minor AADT
-                    cell_g = row[6]   # Fatal (K)
-                    cell_h = row[7]   # Incapacitating (A)
-                    cell_i = row[8]   # Non-Incapacitating (B)
-                    cell_j = row[9]   # Possible (C)
-                    cell_k = row[10]  # No Injury (O)
-                    cell_l = row[11]  # No Injury (O) duplicate
-                    cell_m = row[12]  # FI
+                if len(row) > 13:
+                    # Column indices shifted by 1 due to "Evaluation Name" in column 0
+                    cell_f = row[6]   # Minor AADT
+                    cell_g = row[7]   # Fatal (K)
+                    cell_h = row[8]   # Incapacitating (A)
+                    cell_i = row[9]   # Non-Incapacitating (B)
+                    cell_j = row[10]  # Possible (C)
+                    cell_k = row[11]  # No Injury (O)
+                    cell_l = row[12]  # No Injury (O) duplicate
+                    cell_m = row[13]  # FI
 
                     if cell_f.value and cell_l.value:
                         l_value = float(cell_l.value)
@@ -649,13 +751,14 @@ def fill_missing_ramp_terminal_values(excel_path, sheet_name="RampTerminal"):
         if sheet_name in workbook.sheetnames:
             sheet = workbook[sheet_name]
             for row in sheet.iter_rows(min_row=2):
-                if len(row) > 11:
-                    cell_k = row[6]
-                    cell_a = row[7]
-                    cell_b = row[8]
-                    cell_c = row[9]
-                    cell_o = row[10]
-                    cell_fi = row[11]
+                if len(row) > 12:
+                    # Column indices shifted by 1 due to "Evaluation Name" in column 0
+                    cell_k = row[7]
+                    cell_a = row[8]
+                    cell_b = row[9]
+                    cell_c = row[10]
+                    cell_o = row[11]
+                    cell_fi = row[12]
 
                     if cell_fi.value:
                         fi_value = float(cell_fi.value)
@@ -682,8 +785,9 @@ def scrub_duplicate_columns(excel_path, sheet_name):
 
         if sheet_name in workbook.sheetnames:
             sheet = workbook[sheet_name]
-            # Delete columns 15, 14, 13, 12 (reverse order)
-            for col in range(15, 11, -1):
+            # Delete columns 16, 15, 14, 13 (reverse order)
+            # Column indices shifted by 1 due to "Evaluation Name" in column 1
+            for col in range(16, 12, -1):
                 sheet.delete_cols(col)
             workbook.save(excel_path)
 

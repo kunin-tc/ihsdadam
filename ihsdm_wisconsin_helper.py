@@ -1376,15 +1376,18 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                     file_path = os.path.join(subfolder_path, target_file)
 
                     if os.path.isfile(file_path):
+                        # Get evaluation name from XML
+                        eval_name = compiler.get_evaluation_title_from_xml(subfolder_path)
                         rows = compiler.extract_highway_segments_from_csv(file_path, start_index=5)
                         for row in rows:
                             if compiler.should_process_highway_row(row):
-                                filtered_row = compiler.extract_highway_row_data(row, debug)
+                                filtered_row = compiler.extract_highway_row_data(row, eval_name, debug)
                                 if filtered_row:
                                     all_highway_rows.append(filtered_row)
 
             # Remove duplicates and write
             unique_highway_rows, _ = compiler.remove_duplicates(all_highway_rows)
+            # Sort by Evaluation Name, Segment, Segment # (columns 0, 1, 2)
             unique_highway_rows.sort(key=lambda x: (x[0], x[1], x[2]), reverse=False)
             compiler.write_rows_to_excel(unique_highway_rows, excel_path, "Highway")
             compiler.add_header_to_excel(excel_path, "Highway", compiler.HIGHWAY_HEADER)
@@ -1393,6 +1396,7 @@ View horizontal and vertical alignment profiles for any highway alignment in you
             # Process intersections
             i_folders = [f for f in parent_folders if 'i' in os.path.basename(f).lower()]
             all_intersection_rows = []
+            unique_intersection_rows = []
             first_file = False
 
             for parent_folder in i_folders:
@@ -1403,16 +1407,43 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                     file_path = os.path.join(subfolder_path, target_file)
 
                     if os.path.isfile(file_path):
+                        # Get evaluation name from XML
+                        eval_name = compiler.get_evaluation_title_from_xml(subfolder_path)
+                        # Use INTERSECTION_HEADER[1:] to skip "Evaluation Name" when matching CSV headers
                         rows = compiler.extract_by_headers_from_csv(
-                            file_path, compiler.INTERSECTION_HEADER[:-1] + ["Fatal and Injury (FI) Crashes"],
-                            first_file=not first_file, multi_year=multi_year
+                            file_path, compiler.INTERSECTION_HEADER[1:-1] + ["Fatal and Injury (FI) Crashes"],
+                            first_file=not first_file, multi_year=multi_year, eval_name=eval_name
                         )
                         if rows:
                             all_intersection_rows.extend(rows)
                             first_file = True
 
+            # Also extract intersections from h-folders (mixed highway+intersection files)
+            for parent_folder in h_folders:
+                for subfolder in os.listdir(parent_folder):
+                    subfolder_path = os.path.join(parent_folder, subfolder)
+                    if not os.path.isdir(subfolder_path):
+                        continue
+                    file_path = os.path.join(subfolder_path, target_file)
+
+                    if os.path.isfile(file_path):
+                        # Get evaluation name from XML
+                        eval_name = compiler.get_evaluation_title_from_xml(subfolder_path)
+                        # Extract intersections using section-based extraction
+                        int_rows = compiler.extract_site_set_data(
+                            file_path,
+                            compiler.INTERSECTION_HEADER[1:-1] + ["Fatal and Injury (FI) Crashes"],
+                            "USA Intersection Debug Result",
+                            first_file=(not all_intersection_rows),
+                            eval_name=eval_name
+                        )
+                        if int_rows:
+                            all_intersection_rows.extend(int_rows)
+
+            # Deduplicate intersections by Title (column index 3) before writing
             if all_intersection_rows:
-                compiler.write_rows_to_excel(all_intersection_rows, excel_path, "Intersection")
+                unique_intersection_rows = compiler.deduplicate_by_title(all_intersection_rows, title_column_index=3)
+                compiler.write_rows_to_excel(unique_intersection_rows, excel_path, "Intersection")
                 compiler.fill_missing_intersection_values(excel_path)
                 compiler.scrub_duplicate_columns(excel_path, "Intersection")
 
@@ -1429,9 +1460,12 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                     file_path = os.path.join(subfolder_path, target_file)
 
                     if os.path.isfile(file_path):
+                        # Get evaluation name from XML
+                        eval_name = compiler.get_evaluation_title_from_xml(subfolder_path)
+                        # Use RAMP_TERMINAL_HEADER[1:] to skip "Evaluation Name" when matching CSV headers
                         rows = compiler.extract_by_headers_from_csv(
-                            file_path, compiler.RAMP_TERMINAL_HEADER[:-1] + ["Fatal and Injury (FI) Crashes"],
-                            first_file=not first_file, multi_year=multi_year
+                            file_path, compiler.RAMP_TERMINAL_HEADER[1:-1] + ["Fatal and Injury (FI) Crashes"],
+                            first_file=not first_file, multi_year=multi_year, eval_name=eval_name
                         )
                         if rows:
                             all_ramp_rows.extend(rows)
@@ -1464,23 +1498,30 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                     file_path = os.path.join(subfolder_path, target_file)
 
                     if os.path.isfile(file_path):
+                        # Get evaluation name from XML
+                        eval_name = compiler.get_evaluation_title_from_xml(subfolder_path)
+
                         # Extract site set intersections (USA Intersection Debug Result sections)
+                        # Use SITESET_INT_HEADER[1:] to skip "Evaluation Name" when matching CSV headers
                         int_rows = compiler.extract_site_set_data(
                             file_path,
-                            compiler.SITESET_INT_HEADER,
+                            compiler.SITESET_INT_HEADER[1:],
                             "USA Intersection Debug Result",
-                            first_file=ss_first_int
+                            first_file=ss_first_int,
+                            eval_name=eval_name
                         )
                         if int_rows:
                             ss_intersection_rows.extend(int_rows)
                             ss_first_int = False
 
                         # Extract site set ramp terminals (Ramp Terminal CMF sections)
+                        # Use SITESET_RAMP_HEADER[1:] to skip "Evaluation Name" when matching CSV headers
                         ramp_rows = compiler.extract_site_set_data(
                             file_path,
-                            compiler.SITESET_RAMP_HEADER,
+                            compiler.SITESET_RAMP_HEADER[1:],
                             "Ramp Terminal CMF",
-                            first_file=ss_first_ramp
+                            first_file=ss_first_ramp,
+                            eval_name=eval_name
                         )
                         if ramp_rows:
                             ss_ramp_rows.extend(ramp_rows)
@@ -1521,7 +1562,7 @@ View horizontal and vertical alignment profiles for any highway alignment in you
             summary += f"Results written to:\n{excel_path}\n\n"
             summary += f"Summary:\n"
             summary += f"  - Highway Segments: {len(unique_highway_rows)} rows\n"
-            summary += f"  - Intersections: {len(all_intersection_rows)} rows\n"
+            summary += f"  - Intersections: {len(unique_intersection_rows)} rows\n"
             summary += f"  - Ramp Terminals: {len(all_ramp_rows)} rows\n"
             summary += f"  - Site Set Intersections: {len(ss_intersection_rows)} rows\n"
             summary += f"  - Site Set Ramp Terminals: {len(ss_ramp_rows)} rows"
@@ -3750,9 +3791,10 @@ Once you've set up all your AADT ranges in IHSDM, proceed to Step 2."""
         forecast_entry.grid(row=0, column=1, padx=5, pady=5)
         ttk.Button(step2_frame, text="Browse...", command=self.browse_aadt_forecast).grid(row=0, column=2, padx=5, pady=5)
 
-        ttk.Label(step2_frame, text="BalancedOutput Column Ranges (daily forecast for eval year):").grid(row=1, column=0, sticky=tk.W, pady=5)
-        ttk.Entry(step2_frame, textvariable=self.aadt_forecast_columns, width=30).grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
-        ttk.Label(step2_frame, text="Format: MainlineID:MainlineVal,TurnID:TurnVal (e.g., DQ:DR,DS:DT)", font=('Segoe UI', 8, 'italic')).grid(row=1, column=2, sticky=tk.W)
+        ttk.Label(step2_frame, text="Select Named Range (from column A):").grid(row=1, column=0, sticky=tk.W, pady=5)
+        self.aadt_column_range_combo = ttk.Combobox(step2_frame, textvariable=self.aadt_forecast_columns, width=40, state='readonly')
+        self.aadt_column_range_combo.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
+        ttk.Label(step2_frame, text="(Auto-populated from workbook)", font=('Segoe UI', 8, 'italic')).grid(row=1, column=2, sticky=tk.W)
 
         ttk.Label(step2_frame, text="Evaluation Year:").grid(row=2, column=0, sticky=tk.W, pady=5)
         ttk.Entry(step2_frame, textvariable=self.aadt_year, width=10).grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
@@ -3956,25 +3998,115 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
         ttk.Label(message_frame, text="Then restart this application.", font=('Arial', 10)).pack(pady=5)
 
     def browse_aadt_forecast(self):
-        """Browse for forecast workbook"""
+        """Browse for forecast workbook and load named ranges from column A"""
         file_path = filedialog.askopenfilename(
             title="Select Forecast Workbook",
             filetypes=[("Excel files", "*.xlsx *.xlsb"), ("Excel Workbook", "*.xlsx"), ("Excel Binary", "*.xlsb"), ("All files", "*.*")]
         )
         if file_path:
             self.aadt_forecast_path.set(file_path)
+            # Auto-populate the named ranges dropdown from column A
+            self.load_named_ranges_from_workbook(file_path)
+
+    def load_named_ranges_from_workbook(self, file_path):
+        """Load named ranges from row 1 headers of BalancedOutput sheet"""
+        try:
+            is_xlsb = file_path.lower().endswith('.xlsb')
+            named_ranges = []
+
+            if is_xlsb:
+                try:
+                    from pyxlsb import open_workbook as open_xlsb
+                except ImportError:
+                    messagebox.showerror("Error",
+                        "The pyxlsb library is required to read .xlsb files.\n\n"
+                        "Install with: pip install pyxlsb")
+                    return
+
+                with open_xlsb(file_path) as wb:
+                    # Find BalancedOutput sheet
+                    sheet_name = None
+                    for name in wb.sheets:
+                        if 'balancedoutput' in name.lower():
+                            sheet_name = name
+                            break
+
+                    if not sheet_name:
+                        messagebox.showwarning("Warning", "Could not find 'BalancedOutput' sheet in workbook")
+                        return
+
+                    with wb.get_sheet(sheet_name) as sheet:
+                        # Read row 1 to get header names
+                        for row in sheet.rows():
+                            # Only read the first row (headers)
+                            for cell in row:
+                                if cell.v is not None:
+                                    val = cell.v
+                                    if isinstance(val, str) and val.strip():
+                                        val_str = val.strip()
+                                        if val_str not in named_ranges:
+                                            named_ranges.append(val_str)
+                            break  # Only process first row
+            else:
+                # Use openpyxl for .xlsx files
+                wb = load_workbook(file_path, data_only=True, read_only=True)
+
+                # Find BalancedOutput sheet
+                sheet_name = None
+                for name in wb.sheetnames:
+                    if 'balancedoutput' in name.lower():
+                        sheet_name = name
+                        break
+
+                if not sheet_name:
+                    messagebox.showwarning("Warning", "Could not find 'BalancedOutput' sheet in workbook")
+                    wb.close()
+                    return
+
+                ws = wb[sheet_name]
+
+                # Read row 1 to get header names
+                for row in ws.iter_rows(min_row=1, max_row=1):
+                    for cell in row:
+                        if cell.value is not None:
+                            val = cell.value
+                            if isinstance(val, str) and val.strip():
+                                val_str = val.strip()
+                                if val_str not in named_ranges:
+                                    named_ranges.append(val_str)
+
+                wb.close()
+
+            # Update the combobox with found named ranges
+            if named_ranges:
+                self.aadt_column_range_combo['values'] = named_ranges
+                self.aadt_forecast_columns.set('')  # Clear selection
+                self.status_var.set(f"Found {len(named_ranges)} named ranges in row 1")
+            else:
+                self.aadt_column_range_combo['values'] = []
+                messagebox.showinfo("Info", "No named ranges found in row 1 of BalancedOutput sheet")
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Error reading workbook: {str(e)}")
 
     def load_aadt_forecast(self):
-        """Load forecast data from workbook (supports .xlsx and .xlsb)"""
+        """Load forecast data from workbook based on selected header (supports .xlsx and .xlsb)"""
         forecast_path = self.aadt_forecast_path.get()
+        selected_header = self.aadt_forecast_columns.get()
 
         if not forecast_path or not os.path.isfile(forecast_path):
             messagebox.showerror("Error", "Please select a valid forecast workbook")
             return
 
+        if not selected_header:
+            messagebox.showerror("Error", "Please select a named range from the dropdown")
+            return
+
         try:
             # Check file extension
             is_xlsb = forecast_path.lower().endswith('.xlsb')
+            self.aadt_forecast_ids = {}
+            sheet_name = None
 
             if is_xlsb:
                 # Use pyxlsb for binary Excel files
@@ -3986,12 +4118,8 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                         "Install with: pip install pyxlsb")
                     return
 
-                self.aadt_forecast_ids = {}
-                col_ranges = self.aadt_forecast_columns.get().split(',')
-
                 with open_xlsb(forecast_path) as wb:
                     # Find BalancedOutput sheet
-                    sheet_name = None
                     for name in wb.sheets:
                         if 'balancedoutput' in name.lower():
                             sheet_name = name
@@ -4005,40 +4133,56 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                         # Read all rows into memory
                         rows = list(sheet.rows())
 
-                        for col_range in col_ranges:
-                            col_range = col_range.strip()
-                            if ':' not in col_range:
-                                continue
+                        if not rows:
+                            messagebox.showerror("Error", "BalancedOutput sheet is empty")
+                            return
 
-                            id_col, val_col = col_range.split(':')
-                            # Convert column letters to 0-based index
-                            from openpyxl.utils import column_index_from_string
-                            id_col_num = column_index_from_string(id_col.strip()) - 1
-                            val_col_num = column_index_from_string(val_col.strip()) - 1
+                        # Find the column where selected header starts
+                        header_row = rows[0]
+                        start_col = None
+                        for col_idx, cell in enumerate(header_row):
+                            if cell.v is not None and str(cell.v).strip() == selected_header:
+                                start_col = col_idx
+                                break
 
-                            for row in rows:
-                                if len(row) > max(id_col_num, val_col_num):
-                                    id_cell = row[id_col_num].v if row[id_col_num] else None
-                                    val_cell = row[val_col_num].v if row[val_col_num] else None
+                        if start_col is None:
+                            messagebox.showerror("Error", f"Could not find header '{selected_header}' in row 1")
+                            return
 
-                                    if id_cell is not None:
-                                        # Handle numeric IDs - convert float to int string if possible
-                                        if isinstance(id_cell, float) and id_cell == int(id_cell):
-                                            id_str = str(int(id_cell))
-                                        else:
-                                            id_str = str(id_cell).strip()
-                                        if id_str:
-                                            try:
-                                                val = float(val_cell) if val_cell is not None else 0
-                                                self.aadt_forecast_ids[id_str] = val
-                                            except (ValueError, TypeError):
-                                                self.aadt_forecast_ids[id_str] = 0
+                        # Find where this header section ends (next header or end of data)
+                        end_col = len(header_row)
+                        for col_idx in range(start_col + 1, len(header_row)):
+                            cell = header_row[col_idx]
+                            if cell.v is not None and isinstance(cell.v, str) and cell.v.strip():
+                                end_col = col_idx
+                                break
+
+                        # Read ID:Value pairs from data rows (skip header row)
+                        for row in rows[1:]:
+                            # Process columns in pairs (ID, Value, ID, Value, ...)
+                            col = start_col
+                            while col + 1 < end_col and col + 1 < len(row):
+                                id_cell = row[col].v if col < len(row) and row[col] else None
+                                val_cell = row[col + 1].v if col + 1 < len(row) and row[col + 1] else None
+
+                                if id_cell is not None:
+                                    # Handle numeric IDs
+                                    if isinstance(id_cell, float) and id_cell == int(id_cell):
+                                        id_str = str(int(id_cell))
+                                    else:
+                                        id_str = str(id_cell).strip()
+                                    if id_str:
+                                        try:
+                                            val = float(val_cell) if val_cell is not None else 0
+                                            self.aadt_forecast_ids[id_str] = val
+                                        except (ValueError, TypeError):
+                                            self.aadt_forecast_ids[id_str] = 0
+                                col += 2  # Move to next ID:Value pair
             else:
                 # Use openpyxl for .xlsx files
                 wb = load_workbook(forecast_path, data_only=True)
 
-                # Look for BalancedOutput sheet
-                sheet_name = None
+                # Find BalancedOutput sheet
                 for name in wb.sheetnames:
                     if 'balancedoutput' in name.lower():
                         sheet_name = name
@@ -4050,31 +4194,37 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
 
                 ws = wb[sheet_name]
 
-                # Parse column ranges
-                col_ranges = self.aadt_forecast_columns.get().split(',')
-                self.aadt_forecast_ids = {}
+                # Find the column where selected header starts (in row 1)
+                start_col = None
+                for col in range(1, ws.max_column + 1):
+                    cell_val = ws.cell(row=1, column=col).value
+                    if cell_val is not None and str(cell_val).strip() == selected_header:
+                        start_col = col
+                        break
 
-                for col_range in col_ranges:
-                    col_range = col_range.strip()
-                    if ':' not in col_range:
-                        continue
+                if start_col is None:
+                    messagebox.showerror("Error", f"Could not find header '{selected_header}' in row 1")
+                    wb.close()
+                    return
 
-                    id_col, val_col = col_range.split(':')
-                    id_col = id_col.strip()
-                    val_col = val_col.strip()
+                # Find where this header section ends (next header or end of data)
+                end_col = ws.max_column + 1
+                for col in range(start_col + 1, ws.max_column + 1):
+                    cell_val = ws.cell(row=1, column=col).value
+                    if cell_val is not None and isinstance(cell_val, str) and cell_val.strip():
+                        end_col = col
+                        break
 
-                    # Convert column letters to numbers
-                    from openpyxl.utils import column_index_from_string
-                    id_col_num = column_index_from_string(id_col)
-                    val_col_num = column_index_from_string(val_col)
-
-                    # Read all rows in this column pair
-                    for row in range(1, ws.max_row + 1):
-                        id_cell = ws.cell(row=row, column=id_col_num).value
-                        val_cell = ws.cell(row=row, column=val_col_num).value
+                # Read ID:Value pairs from data rows (skip header row)
+                for row in range(2, ws.max_row + 1):
+                    # Process columns in pairs (ID, Value, ID, Value, ...)
+                    col = start_col
+                    while col + 1 < end_col:
+                        id_cell = ws.cell(row=row, column=col).value
+                        val_cell = ws.cell(row=row, column=col + 1).value
 
                         if id_cell is not None:
-                            # Handle numeric IDs - convert float to int string if possible
+                            # Handle numeric IDs
                             if isinstance(id_cell, float) and id_cell == int(id_cell):
                                 id_str = str(int(id_cell))
                             else:
@@ -4085,6 +4235,7 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                                     self.aadt_forecast_ids[id_str] = val
                                 except (ValueError, TypeError):
                                     self.aadt_forecast_ids[id_str] = 0
+                        col += 2  # Move to next ID:Value pair
 
                 wb.close()
 
@@ -4092,7 +4243,7 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
             sample_ids = list(self.aadt_forecast_ids.keys())[:10]
             print(f"Loaded {len(self.aadt_forecast_ids)} forecast IDs. Sample: {sample_ids}")
 
-            self.aadt_forecast_status.set(f"Loaded {len(self.aadt_forecast_ids)} forecast IDs from {sheet_name}")
+            self.aadt_forecast_status.set(f"Loaded {len(self.aadt_forecast_ids)} forecast IDs from '{selected_header}'")
             self.status_var.set(f"Forecast data loaded: {len(self.aadt_forecast_ids)} IDs")
 
         except Exception as e:
@@ -4659,14 +4810,58 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
 
     def apply_aadt_to_xml(self):
         """Apply calculated AADT values to highway XML files"""
-        # Group sections by XML file
+        # Get current project path from top bar
+        current_project = self.project_path.get()
+        if self.placeholder_active or not current_project or not os.path.isdir(current_project):
+            messagebox.showerror("Error", "Please select a valid project folder first.")
+            return
+
+        project_dir = Path(current_project)
+
+        # Group sections by XML file, reconstructing paths from current project
         file_sections = {}
+        path_errors = []
         for section in self.aadt_sections:
             if section['calculated_aadt']:
-                xml_file = section['xml_file']
-                if xml_file not in file_sections:
-                    file_sections[xml_file] = []
-                file_sections[xml_file].append(section)
+                # Extract relative path components from stored path
+                stored_path = Path(section['xml_file'])
+                # Get highway folder name (e.g., h2, h27) and xml filename
+                highway_folder = stored_path.parent.name  # e.g., "h2"
+                xml_filename = stored_path.name  # e.g., "highway.1.xml"
+
+                # Try to find the XML file in current project
+                # First try direct path (project/h2/highway.1.xml)
+                xml_file = project_dir / highway_folder / xml_filename
+
+                # If not found, search in interchange containers (c*/h*)
+                if not xml_file.exists():
+                    found = False
+                    for c_dir in project_dir.glob('c*'):
+                        potential = c_dir / highway_folder / xml_filename
+                        if potential.exists():
+                            xml_file = potential
+                            found = True
+                            break
+                    if not found:
+                        # Try searching anywhere in project
+                        matches = list(project_dir.glob(f'**/{highway_folder}/{xml_filename}'))
+                        if matches:
+                            xml_file = matches[0]
+                        else:
+                            path_errors.append(f"{highway_folder}/{xml_filename}")
+                            continue
+
+                xml_file_str = str(xml_file)
+                if xml_file_str not in file_sections:
+                    file_sections[xml_file_str] = []
+                file_sections[xml_file_str].append(section)
+
+        if path_errors:
+            messagebox.showwarning("Path Errors",
+                f"Could not find {len(path_errors)} XML files in current project:\n" +
+                "\n".join(path_errors[:10]) +
+                ("\n..." if len(path_errors) > 10 else "") +
+                f"\n\nMake sure the project path is correct:\n{current_project}")
 
         if not file_sections:
             messagebox.showwarning("No Changes", "No AADT values to apply. "
