@@ -120,8 +120,15 @@ class IHSDMWisconsinHelper:
         # Compiler state
         self.target_file = tk.StringVar(value="evaluation.1.diag.csv")
         self.excel_output = tk.StringVar()
-        self.multi_year_mode = tk.BooleanVar(value=False)  # Default to single-year mode
         self.debug_mode = tk.BooleanVar(value=False)
+
+        # Year selection state
+        self.available_years = []  # List of years found in project
+        self.available_years_var = tk.StringVar(value="Not scanned")
+        self.year_mode = tk.StringVar(value="single")  # "single" or "range"
+        self.single_year_var = tk.StringVar(value="")
+        self.start_year_var = tk.StringVar(value="")
+        self.end_year_var = tk.StringVar(value="")
 
         self.setup_ui()
 
@@ -537,8 +544,19 @@ class IHSDMWisconsinHelper:
         self.compiler_tab.columnconfigure(0, weight=1)
         self.compiler_tab.rowconfigure(0, weight=1)
 
-        # Configuration section
-        config_frame = ttk.LabelFrame(tab_frame, text="Compiler Configuration", padding="10")
+        # Two-column layout: left (config) and right (scan results)
+        left_frame = ttk.Frame(tab_frame)
+        left_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S), padx=(0, 10))
+
+        right_frame = ttk.Frame(tab_frame)
+        right_frame.grid(row=0, column=1, sticky=(tk.W, tk.E, tk.N, tk.S))
+
+        tab_frame.columnconfigure(0, weight=1)
+        tab_frame.columnconfigure(1, weight=1)
+        tab_frame.rowconfigure(0, weight=1)
+
+        # Configuration section (left side)
+        config_frame = ttk.LabelFrame(left_frame, text="Compiler Configuration", padding="10")
         config_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
         # Target file
@@ -551,23 +569,47 @@ class IHSDMWisconsinHelper:
         ttk.Entry(config_frame, textvariable=self.excel_output, width=40).grid(row=1, column=1, sticky=(tk.W, tk.E), padx=5, pady=5)
         ttk.Button(config_frame, text="Browse...", command=self.browse_excel_output).grid(row=1, column=2, padx=5, pady=5)
 
-        # Options
-        ttk.Checkbutton(config_frame, text="Multi-year extraction (20 years)",
-                       variable=self.multi_year_mode).grid(row=2, column=0, columnspan=2, sticky=tk.W, padx=5, pady=5)
+        # Year selection section
+        year_frame = ttk.LabelFrame(config_frame, text="Evaluation Years", padding="5")
+        year_frame.grid(row=2, column=0, columnspan=3, sticky=(tk.W, tk.E), padx=5, pady=5)
+
+        # Scan button and available years display
+        scan_row = ttk.Frame(year_frame)
+        scan_row.grid(row=0, column=0, columnspan=4, sticky=tk.W, pady=(0, 5))
+        ttk.Button(scan_row, text="Scan for Years", command=self.scan_available_years).pack(side=tk.LEFT, padx=(0, 10))
+        ttk.Label(scan_row, text="Available:").pack(side=tk.LEFT)
+        ttk.Label(scan_row, textvariable=self.available_years_var, foreground='blue').pack(side=tk.LEFT, padx=5)
+
+        # Single year option
+        ttk.Radiobutton(year_frame, text="Single Year:", variable=self.year_mode, value="single",
+                       command=self.update_year_dropdowns).grid(row=1, column=0, sticky=tk.W)
+        self.single_year_combo = ttk.Combobox(year_frame, textvariable=self.single_year_var, width=8, state='readonly')
+        self.single_year_combo.grid(row=1, column=1, sticky=tk.W, padx=5)
+
+        # Year range option
+        ttk.Radiobutton(year_frame, text="Year Range:", variable=self.year_mode, value="range",
+                       command=self.update_year_dropdowns).grid(row=2, column=0, sticky=tk.W)
+        self.start_year_combo = ttk.Combobox(year_frame, textvariable=self.start_year_var, width=8, state='disabled')
+        self.start_year_combo.grid(row=2, column=1, sticky=tk.W, padx=5)
+        ttk.Label(year_frame, text="to").grid(row=2, column=2)
+        self.end_year_combo = ttk.Combobox(year_frame, textvariable=self.end_year_var, width=8, state='disabled')
+        self.end_year_combo.grid(row=2, column=3, sticky=tk.W, padx=5)
+
+        # Debug option
         ttk.Checkbutton(config_frame, text="Debug mode (verbose output)",
                        variable=self.debug_mode).grid(row=3, column=0, columnspan=2, sticky=tk.W, padx=5, pady=5)
 
         config_frame.columnconfigure(1, weight=1)
 
         # Compile button
-        compile_frame = ttk.Frame(tab_frame)
+        compile_frame = ttk.Frame(left_frame)
         compile_frame.grid(row=1, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
         ttk.Button(compile_frame, text="Compile Data to Excel",
                   command=self.run_compiler, style='Accent.TButton').pack(side=tk.LEFT, padx=5)
 
         # Instructions
-        instructions_frame = ttk.LabelFrame(tab_frame, text="Instructions & Information", padding="10")
+        instructions_frame = ttk.LabelFrame(left_frame, text="Instructions & Information", padding="10")
         instructions_frame.grid(row=2, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
 
         instructions_text = scrolledtext.ScrolledText(instructions_frame, wrap=tk.WORD, height=15, font=('Consolas', 9))
@@ -602,8 +644,7 @@ OUTPUT:
 • Excel file with up to 5 sheets: Highway, Intersection, RampTerminal, SiteSet_Int, SiteSet_Ramp
 • Site set data goes to separate SiteSet_Int and SiteSet_Ramp sheets
 • Includes crash predictions with severity breakdown
-• Single-year mode (default): Extracts one year of predictions
-• Multi-year mode: Extracts 20 years of predictions (enable checkbox above)
+• Extracts data for selected evaluation year(s) only
 
 HSM SEVERITY DISTRIBUTIONS:
 • Highway: K=1.46%, A=4.48%, B=24.69%, C=69.17%
@@ -612,16 +653,57 @@ HSM SEVERITY DISTRIBUTIONS:
 STEPS:
 1. Select project directory above (shared with Warning Extractor)
 2. Set Excel output file path
-3. Configure options (multi-year, debug)
-4. Click "Compile Data to Excel"
-5. Review output in Excel file
+3. Click "Scan for Years" to find available evaluation years
+4. Select single year OR year range from dropdowns
+5. Click "Compile Data to Excel"
+6. Review output in Excel file
 
 NOTE: Consult your state's predictive modeling practices for calibration factors.
 Original script by Adam Engbring (aengbring@hntb.com)
 """)
         instructions_text.config(state=tk.DISABLED)
 
-        tab_frame.rowconfigure(2, weight=1)
+        left_frame.rowconfigure(2, weight=1)
+
+        # Scan Results Panel (right side)
+        scan_results_frame = ttk.LabelFrame(right_frame, text="Scan Results - Alignments & Available Years", padding="10")
+        scan_results_frame.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        right_frame.rowconfigure(0, weight=1)
+        right_frame.columnconfigure(0, weight=1)
+
+        # Treeview for scan results
+        tree_container = ttk.Frame(scan_results_frame)
+        tree_container.pack(fill=tk.BOTH, expand=True)
+
+        # Create treeview with columns
+        columns = ('folder', 'years')
+        self.scan_results_tree = ttk.Treeview(tree_container, columns=columns, show='tree headings', height=18)
+
+        # Configure columns
+        self.scan_results_tree.heading('#0', text='Alignment')
+        self.scan_results_tree.heading('folder', text='Folder')
+        self.scan_results_tree.heading('years', text='Available Years')
+
+        self.scan_results_tree.column('#0', width=200, anchor='w')
+        self.scan_results_tree.column('folder', width=60, anchor='center')
+        self.scan_results_tree.column('years', width=150, anchor='w')
+
+        # Scrollbars
+        vsb = ttk.Scrollbar(tree_container, orient="vertical", command=self.scan_results_tree.yview)
+        hsb = ttk.Scrollbar(tree_container, orient="horizontal", command=self.scan_results_tree.xview)
+        self.scan_results_tree.configure(yscrollcommand=vsb.set, xscrollcommand=hsb.set)
+
+        # Grid layout for treeview and scrollbars
+        self.scan_results_tree.grid(row=0, column=0, sticky=(tk.W, tk.E, tk.N, tk.S))
+        vsb.grid(row=0, column=1, sticky=(tk.N, tk.S))
+        hsb.grid(row=1, column=0, sticky=(tk.W, tk.E))
+
+        tree_container.rowconfigure(0, weight=1)
+        tree_container.columnconfigure(0, weight=1)
+
+        # Status label below treeview
+        self.scan_status_label = ttk.Label(scan_results_frame, text="Click 'Scan for Years' to analyze evaluation files", foreground='gray')
+        self.scan_status_label.pack(pady=(5, 0))
 
     def setup_compiler_disabled_tab(self):
         """Show message when openpyxl is not available"""
@@ -1333,6 +1415,154 @@ View horizontal and vertical alignment profiles for any highway alignment in you
     # DATA COMPILER FUNCTIONS (stub - will add full implementation)
     # =========================================================================
 
+    def update_year_dropdowns(self):
+        """Enable/disable year dropdowns based on selected mode"""
+        mode = self.year_mode.get()
+        if mode == "single":
+            self.single_year_combo.config(state='readonly')
+            self.start_year_combo.config(state='disabled')
+            self.end_year_combo.config(state='disabled')
+        else:  # range
+            self.single_year_combo.config(state='disabled')
+            self.start_year_combo.config(state='readonly')
+            self.end_year_combo.config(state='readonly')
+
+    def scan_available_years(self):
+        """Scan evaluation CSVs to find available years with per-alignment breakdown"""
+        project_path = self.project_path.get()
+
+        if self.placeholder_active or not project_path or not os.path.isdir(project_path):
+            messagebox.showerror("Error", "Please select a valid project directory first")
+            return
+
+        self.status_var.set("Scanning for available years...")
+        self.root.update()
+
+        try:
+            project_dir = Path(project_path)
+            all_years = set()
+            alignment_years = {}  # {(folder_id, alignment_name): set(years)}
+
+            # Find ALL evaluation CSV files
+            csv_files = list(project_dir.glob('**/evaluation.*.diag.csv'))
+            if not csv_files:
+                messagebox.showwarning("No Files", "No evaluation CSV files found in project")
+                self.available_years_var.set("No files found")
+                self.scan_status_label.config(text="No evaluation files found")
+                return
+
+            # Process each CSV file
+            for csv_file in csv_files:
+                try:
+                    # Get alignment folder (parent of evaluation folder)
+                    eval_folder = csv_file.parent
+                    alignment_folder = eval_folder.parent
+                    folder_id = alignment_folder.name
+
+                    # Skip if not a valid alignment folder (h*, i*, r*, ss*)
+                    if not (folder_id.startswith('h') or folder_id.startswith('i') or
+                            folder_id.startswith('r') or folder_id.startswith('ss')):
+                        continue
+
+                    # Get alignment name from XML
+                    alignment_name = self.get_alignment_name(alignment_folder)
+
+                    # Read CSV and extract years
+                    file_years = set()
+                    with open(csv_file, 'r', encoding='utf-8') as f:
+                        import csv as csv_module
+                        reader = csv_module.reader(f)
+                        lines = list(reader)
+
+                        # Find all header rows with "Year" column (handles multiple sections)
+                        for i, row in enumerate(lines):
+                            if 'Year' in row:
+                                year_col = row.index('Year')
+                                # Read subsequent data rows until next section
+                                for data_row in lines[i+1:]:
+                                    if not data_row or '*************' in str(data_row):
+                                        break
+                                    if len(data_row) > year_col:
+                                        year_val = data_row[year_col].strip()
+                                        if year_val.isdigit() and len(year_val) == 4:
+                                            file_years.add(year_val)
+                                            all_years.add(year_val)
+
+                    # Store years for this alignment
+                    key = (folder_id, alignment_name)
+                    if key not in alignment_years:
+                        alignment_years[key] = set()
+                    alignment_years[key].update(file_years)
+
+                except Exception as e:
+                    print(f"Error reading {csv_file}: {e}")
+                    continue
+
+            # Clear and populate treeview
+            for item in self.scan_results_tree.get_children():
+                self.scan_results_tree.delete(item)
+
+            if alignment_years:
+                # Sort by folder type (h first, then i, then r, then ss) then by number
+                def sort_key(item):
+                    folder_id = item[0][0]
+                    # Extract prefix and number
+                    prefix = ''.join(c for c in folder_id if c.isalpha())
+                    num_str = ''.join(c for c in folder_id if c.isdigit())
+                    num = int(num_str) if num_str else 0
+                    # Priority: h=0, i=1, r=2, ss=3
+                    prefix_order = {'h': 0, 'i': 1, 'r': 2, 'ss': 3}.get(prefix, 4)
+                    return (prefix_order, num)
+
+                sorted_alignments = sorted(alignment_years.items(), key=sort_key)
+
+                for (folder_id, alignment_name), years in sorted_alignments:
+                    sorted_years = sorted(years)
+                    if len(sorted_years) == 1:
+                        years_str = sorted_years[0]
+                    elif len(sorted_years) == int(sorted_years[-1]) - int(sorted_years[0]) + 1:
+                        # Consecutive years - show as range
+                        years_str = f"{sorted_years[0]}-{sorted_years[-1]}"
+                    else:
+                        # Non-consecutive - show all
+                        years_str = ", ".join(sorted_years)
+
+                    self.scan_results_tree.insert('', 'end', text=alignment_name,
+                                                  values=(folder_id, years_str))
+
+                # Update status label
+                self.scan_status_label.config(
+                    text=f"Found {len(alignment_years)} alignments, {len(all_years)} unique years",
+                    foreground='green'
+                )
+
+            # Update available years dropdown
+            if all_years:
+                self.available_years = sorted(all_years)
+                self.available_years_var.set(", ".join(self.available_years))
+
+                # Populate comboboxes
+                self.single_year_combo['values'] = self.available_years
+                self.start_year_combo['values'] = self.available_years
+                self.end_year_combo['values'] = self.available_years
+
+                # Set defaults
+                if self.available_years:
+                    self.single_year_var.set(self.available_years[0])
+                    self.start_year_var.set(self.available_years[0])
+                    self.end_year_var.set(self.available_years[-1])
+
+                self.status_var.set(f"Found {len(self.available_years)} years: {self.available_years[0]}-{self.available_years[-1]}")
+            else:
+                self.available_years_var.set("No years found")
+                self.status_var.set("No year data found in evaluation files")
+                self.scan_status_label.config(text="No year data found in files", foreground='red')
+
+        except Exception as e:
+            messagebox.showerror("Error", f"Error scanning for years: {str(e)}")
+            self.available_years_var.set("Scan error")
+            self.scan_status_label.config(text=f"Scan error: {str(e)}", foreground='red')
+
     def run_compiler(self):
         """Run the data compiler"""
         import ihsdm_compiler_core as compiler
@@ -1340,7 +1570,6 @@ View horizontal and vertical alignment profiles for any highway alignment in you
         project_path = self.project_path.get()
         excel_path = self.excel_output.get()
         target_file = self.target_file.get()
-        multi_year = self.multi_year_mode.get()
         debug = self.debug_mode.get()
 
         # Validation
@@ -1351,6 +1580,34 @@ View horizontal and vertical alignment profiles for any highway alignment in you
         if not excel_path:
             messagebox.showerror("Error", "Please select an Excel output file")
             return
+
+        # Build target years list from selection
+        if not self.available_years:
+            messagebox.showerror("Error", "Please scan for available years first")
+            return
+
+        target_years = []
+        if self.year_mode.get() == "single":
+            single_year = self.single_year_var.get()
+            if not single_year:
+                messagebox.showerror("Error", "Please select a year")
+                return
+            target_years = [single_year]
+        else:  # range
+            start_year = self.start_year_var.get()
+            end_year = self.end_year_var.get()
+            if not start_year or not end_year:
+                messagebox.showerror("Error", "Please select start and end years")
+                return
+            try:
+                start_idx = self.available_years.index(start_year)
+                end_idx = self.available_years.index(end_year)
+                if start_idx > end_idx:
+                    start_idx, end_idx = end_idx, start_idx
+                target_years = self.available_years[start_idx:end_idx + 1]
+            except ValueError:
+                messagebox.showerror("Error", "Invalid year selection")
+                return
 
         self.status_var.set("Compiling data...")
         self.root.update()
@@ -1412,7 +1669,7 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                         # Use INTERSECTION_HEADER[1:] to skip "Evaluation Name" when matching CSV headers
                         rows = compiler.extract_by_headers_from_csv(
                             file_path, compiler.INTERSECTION_HEADER[1:-1] + ["Fatal and Injury (FI) Crashes"],
-                            first_file=not first_file, multi_year=multi_year, eval_name=eval_name
+                            first_file=not first_file, target_years=target_years, eval_name=eval_name
                         )
                         if rows:
                             all_intersection_rows.extend(rows)
@@ -1465,7 +1722,7 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                         # Use RAMP_TERMINAL_HEADER[1:] to skip "Evaluation Name" when matching CSV headers
                         rows = compiler.extract_by_headers_from_csv(
                             file_path, compiler.RAMP_TERMINAL_HEADER[1:-1] + ["Fatal and Injury (FI) Crashes"],
-                            first_file=not first_file, multi_year=multi_year, eval_name=eval_name
+                            first_file=not first_file, target_years=target_years, eval_name=eval_name
                         )
                         if rows:
                             all_ramp_rows.extend(rows)
@@ -3707,17 +3964,21 @@ View horizontal and vertical alignment profiles for any highway alignment in you
         # Initialize AADT-specific state
         self.aadt_forecast_path = tk.StringVar()
         self.aadt_forecast_columns = tk.StringVar(value="DQ:DR,DS:DT")  # Default column ranges
-        self.aadt_year = tk.StringVar(value="2028")
+        self.aadt_year = tk.StringVar(value="2028")  # Legacy, kept for compatibility
         self.aadt_sections = []  # Will hold parsed AADT section data
         self.aadt_forecast_ids = {}  # Will hold mapping of forecast IDs to values
         self.aadt_section_mappings = {}  # Will hold section -> forecast IDs mappings
+
+        # Multi-year AADT support
+        self.aadt_working_year = tk.StringVar(value="")  # Currently selected year to view/edit
+        self.aadt_years_in_project = []  # List of years found in XML files
 
         # Compatibility notice at top
         notice_frame = tk.Frame(tab_frame, bg='#fff3cd', padx=10, pady=8)
         notice_frame.grid(row=0, column=0, sticky=(tk.W, tk.E), pady=(0, 10))
 
         notice_text = ("NOTE: This tool is designed for use with HNTB Wisconsin's forecasting spreadsheet format. "
-                      "Currently supports setting AADT for one evaluation year at a time.")
+                      "Supports multiple evaluation years (e.g., 2028 base year + 2050 design year).")
         tk.Label(notice_frame, text=notice_text, font=('Segoe UI', 9, 'italic'),
                 bg='#fff3cd', fg='#856404', wraplength=900, justify=tk.LEFT).pack(anchor='w')
 
@@ -3796,8 +4057,18 @@ Once you've set up all your AADT ranges in IHSDM, proceed to Step 2."""
         self.aadt_column_range_combo.grid(row=1, column=1, sticky=tk.W, padx=5, pady=5)
         ttk.Label(step2_frame, text="(Auto-populated from workbook)", font=('Segoe UI', 8, 'italic')).grid(row=1, column=2, sticky=tk.W)
 
-        ttk.Label(step2_frame, text="Evaluation Year:").grid(row=2, column=0, sticky=tk.W, pady=5)
-        ttk.Entry(step2_frame, textvariable=self.aadt_year, width=10).grid(row=2, column=1, sticky=tk.W, padx=5, pady=5)
+        # Working Year selection (populated after scan)
+        year_row = ttk.Frame(step2_frame)
+        year_row.grid(row=2, column=0, columnspan=3, sticky=tk.W, pady=5)
+
+        ttk.Label(year_row, text="Working Year:").pack(side=tk.LEFT)
+        self.aadt_working_year_combo = ttk.Combobox(year_row, textvariable=self.aadt_working_year, width=10, state='readonly')
+        self.aadt_working_year_combo.pack(side=tk.LEFT, padx=(5, 15))
+        self.aadt_working_year_combo.bind('<<ComboboxSelected>>', lambda e: self.filter_aadt_sections_by_year())
+
+        ttk.Button(year_row, text="Add Year...", command=self.add_aadt_year).pack(side=tk.LEFT, padx=5)
+        self.aadt_year_status = ttk.Label(year_row, text="(Scan project first to see available years)", foreground='gray', font=('Segoe UI', 8, 'italic'))
+        self.aadt_year_status.pack(side=tk.LEFT, padx=10)
 
         btn_frame = ttk.Frame(step2_frame)
         btn_frame.grid(row=3, column=0, columnspan=3, pady=10)
@@ -3865,6 +4136,7 @@ Click on an alignment to expand and see its sections. Enter IDs, then click "Mar
         self.aadt_tree.tag_configure('reviewed', background='#d4edda')  # Light green
         self.aadt_tree.tag_configure('pending', background='#fff3cd')   # Light yellow
         self.aadt_tree.tag_configure('alignment', font=('Segoe UI', 9, 'bold'))
+        self.aadt_tree.tag_configure('new_year', background='#cce5ff', font=('Segoe UI', 9, 'italic'))  # Light blue for new year entries
 
         # Right side: Checklist panel
         checklist_frame = ttk.LabelFrame(step4_frame, text="Review Checklist", padding="10")
@@ -4386,7 +4658,8 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                             'sign4': '+',
                             'sign5': '+',
                             'sign6': '+',
-                            'calculated_aadt': ''
+                            'calculated_aadt': '',
+                            'is_new': False  # True if this is a new year entry not yet in XML
                         }
                         self.aadt_sections.append(section)
                         section_num += 1
@@ -4395,13 +4668,29 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                     print(f"Error parsing {highway_xml}: {e}")
                     continue
 
+            # Collect unique years from all sections and populate dropdown
+            self.aadt_years_in_project = sorted(set(s['year'] for s in self.aadt_sections if s['year']))
+            self.aadt_working_year_combo['values'] = self.aadt_years_in_project
+            if self.aadt_years_in_project:
+                # Set to first year if not already set
+                if not self.aadt_working_year.get() or self.aadt_working_year.get() not in self.aadt_years_in_project:
+                    self.aadt_working_year.set(self.aadt_years_in_project[0])
+                self.aadt_year_status.config(text=f"Years found: {', '.join(self.aadt_years_in_project)}", foreground='green')
+            else:
+                self.aadt_year_status.config(text="No years found in AADT data", foreground='orange')
+
             # Populate treeview - grouped by alignment (collapsible)
+            # Filter to show only sections for the working year
             self.aadt_tree.delete(*self.aadt_tree.get_children())
             self.aadt_reviewed_alignments = set()
 
-            # Group sections by roadway_title
+            # Group sections by roadway_title, filtering by working year
+            working_year = self.aadt_working_year.get()
             alignments = {}
             for i, section in enumerate(self.aadt_sections):
+                # Filter by working year if one is selected
+                if working_year and section['year'] != working_year:
+                    continue
                 title = section['roadway_title']
                 if title not in alignments:
                     alignments[title] = []
@@ -4450,6 +4739,162 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
         except Exception as e:
             messagebox.showerror("Error", f"Error scanning project: {str(e)}")
             self.aadt_scan_status.set(f"Error: {str(e)}")
+
+    def filter_aadt_sections_by_year(self):
+        """Re-populate treeview filtered by the selected working year"""
+        if not self.aadt_sections:
+            return
+
+        working_year = self.aadt_working_year.get()
+
+        # Clear and repopulate treeview
+        self.aadt_tree.delete(*self.aadt_tree.get_children())
+
+        # Group sections by roadway_title, filtering by working year
+        alignments = {}
+        for i, section in enumerate(self.aadt_sections):
+            # Filter by working year if one is selected
+            if working_year and section['year'] != working_year:
+                continue
+            title = section['roadway_title']
+            if title not in alignments:
+                alignments[title] = []
+            alignments[title].append((i, section))
+
+        # Create parent nodes for each alignment and child nodes for sections
+        self.aadt_alignment_nodes = {}
+        for title in sorted(alignments.keys()):
+            sections_list = alignments[title]
+            parent_id = f"align_{title}"
+            section_count = len(sections_list)
+            self.aadt_tree.insert('', 'end', iid=parent_id, text=f"{title} ({section_count} sections)",
+                                 values=('', '', '', '', '', '', ''),
+                                 tags=('alignment', 'pending'), open=False)
+            self.aadt_alignment_nodes[title] = parent_id
+
+            for idx, section in sections_list:
+                id_display = self.get_ids_display(section)
+                # Use new_year tag for sections not yet in XML
+                tags = ('new_year',) if section.get('is_new', False) else ('pending',)
+                values = (
+                    section['section_num'],
+                    self.format_station(section['start_station']),
+                    self.format_station(section['end_station']),
+                    section['year'],
+                    section['current_aadt'],
+                    id_display,
+                    section['calculated_aadt']
+                )
+                self.aadt_tree.insert(parent_id, 'end', iid=str(idx), text='',
+                                     values=values, tags=tags)
+
+        # Update status
+        section_count = sum(len(v) for v in alignments.values())
+        year_str = f" for year {working_year}" if working_year else ""
+        self.aadt_scan_status.set(f"Showing {section_count} sections across {len(alignments)} alignments{year_str}")
+
+    def add_aadt_year(self):
+        """Add a new year by duplicating sections from an existing year"""
+        if not self.aadt_sections:
+            messagebox.showwarning("No Data", "Please scan the project first to find existing AADT sections.")
+            return
+
+        if not self.aadt_years_in_project:
+            messagebox.showwarning("No Years", "No years found in the project. Set up AADT in IHSDM first.")
+            return
+
+        # Ask for new year value
+        from tkinter import simpledialog
+        new_year = simpledialog.askstring("Add Year", "Enter the new evaluation year (e.g., 2050):",
+                                          parent=self.root)
+        if not new_year:
+            return
+
+        # Validate year
+        if not new_year.isdigit() or len(new_year) != 4:
+            messagebox.showerror("Invalid Year", "Please enter a valid 4-digit year.")
+            return
+
+        if new_year in self.aadt_years_in_project:
+            messagebox.showwarning("Year Exists", f"Year {new_year} already exists in the project.")
+            return
+
+        # Get base year (use currently selected working year, or first year)
+        base_year = self.aadt_working_year.get() or self.aadt_years_in_project[0]
+
+        # Find sections for base year
+        base_sections = [s for s in self.aadt_sections if s['year'] == base_year]
+        if not base_sections:
+            messagebox.showerror("Error", f"No sections found for base year {base_year}.")
+            return
+
+        # Check if base year sections have IDs mapped
+        base_with_ids = sum(1 for s in base_sections if s.get('id1', '').strip())
+        if base_with_ids == 0:
+            messagebox.showwarning("No IDs Mapped",
+                f"Base year {base_year} has no forecast IDs mapped.\n\n"
+                "The new year sections will have empty IDs.\n"
+                "You can map IDs after adding the year.")
+
+        # Create new sections for the new year
+        new_section_count = 0
+        ids_copied = 0
+        for base_section in base_sections:
+            new_section = {
+                'roadway_title': base_section['roadway_title'],
+                'highway_dir': base_section['highway_dir'],
+                'xml_file': base_section['xml_file'],
+                'section_num': base_section['section_num'],  # Same section number
+                'start_station': base_section['start_station'],
+                'end_station': base_section['end_station'],
+                'year': new_year,
+                'current_aadt': '1',  # Default value for new entries
+                # Copy forecast ID mappings from base year
+                'id1': base_section.get('id1', ''),
+                'id2': base_section.get('id2', ''),
+                'id3': base_section.get('id3', ''),
+                'id4': base_section.get('id4', ''),
+                'id5': base_section.get('id5', ''),
+                'id6': base_section.get('id6', ''),
+                'sign1': base_section.get('sign1', '+'),
+                'sign2': base_section.get('sign2', '+'),
+                'sign3': base_section.get('sign3', '+'),
+                'sign4': base_section.get('sign4', '+'),
+                'sign5': base_section.get('sign5', '+'),
+                'sign6': base_section.get('sign6', '+'),
+                'calculated_aadt': '',
+                'is_new': True  # Mark as new - needs to be added to XML
+            }
+
+            # Track if IDs were copied
+            if base_section.get('id1', '').strip():
+                ids_copied += 1
+
+            # NOTE: Don't auto-calculate - user needs to load forecast data for this year
+            # The forecast values for 2050 will be different than 2028
+
+            self.aadt_sections.append(new_section)
+            new_section_count += 1
+
+        # Update years list and dropdown
+        self.aadt_years_in_project = sorted(set(s['year'] for s in self.aadt_sections if s['year']))
+        self.aadt_working_year_combo['values'] = self.aadt_years_in_project
+        self.aadt_year_status.config(text=f"Years: {', '.join(self.aadt_years_in_project)}", foreground='green')
+
+        # Switch to the new year view
+        self.aadt_working_year.set(new_year)
+        self.filter_aadt_sections_by_year()
+
+        ids_msg = f"Forecast IDs copied from {base_year} for {ids_copied} sections." if ids_copied > 0 else f"No forecast IDs to copy from {base_year}."
+
+        messagebox.showinfo("Year Added",
+                           f"Added {new_section_count} sections for year {new_year}.\n\n"
+                           f"{ids_msg}\n\n"
+                           f"NEXT STEPS:\n"
+                           f"1. Load the forecast workbook data for {new_year}\n"
+                           f"2. Click 'Calculate All' to compute AADT values\n"
+                           f"3. Click 'Apply AADT' to write to XML\n\n"
+                           f"(New sections shown in blue/italic)")
 
     def on_aadt_tree_select(self, event):
         """Handle tree selection - populate ID entry fields"""
@@ -4565,15 +5010,27 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
         return max(0, total)  # Don't allow negative AADT
 
     def calculate_all_aadt(self):
-        """Calculate AADT for all sections that have forecast IDs assigned"""
+        """Calculate AADT for sections in the current working year that have forecast IDs assigned"""
         if not self.aadt_forecast_ids:
             messagebox.showwarning("No Forecast", "Please load forecast data first (Step 2)")
             return
 
+        working_year = self.aadt_working_year.get()
+        if not working_year:
+            messagebox.showwarning("No Year Selected", "Please select a working year first")
+            return
+
         calculated_count = 0
         missing_ids = set()
+        total_for_year = 0
 
         for i, section in enumerate(self.aadt_sections):
+            # Only calculate for sections in the current working year
+            if section['year'] != working_year:
+                continue
+
+            total_for_year += 1
+
             # Check if section has any IDs assigned
             has_ids = False
             for j in range(1, 7):
@@ -4612,7 +5069,7 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                 except (ValueError, tk.TclError) as e:
                     print(f"Error updating tree item {child_item}: {e}")
 
-        status_msg = f"Calculated AADT for {calculated_count} of {len(self.aadt_sections)} sections"
+        status_msg = f"Year {working_year}: Calculated AADT for {calculated_count} of {total_for_year} sections"
         if missing_ids:
             status_msg += f" (Warning: {len(missing_ids)} IDs not found in forecast)"
             print(f"Missing forecast IDs: {missing_ids}")
@@ -4627,9 +5084,12 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                 f"Loaded forecast contains {len(self.aadt_forecast_ids)} IDs.")
         elif calculated_count == 0:
             messagebox.showinfo("No IDs Assigned",
-                "No forecast IDs have been assigned to any sections yet.\n\n"
+                f"No forecast IDs have been assigned to any sections for year {working_year}.\n\n"
                 "Select a section, enter Forecast IDs in the 'Assign IDs' section, "
                 "then click 'Apply to Selected' before using Calculate All.")
+        else:
+            messagebox.showinfo("Calculation Complete",
+                f"Calculated AADT for {calculated_count} sections in year {working_year}.")
         self.status_var.set(status_msg)
 
     def update_aadt_checklist(self):
@@ -4780,12 +5240,19 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
     def preview_aadt_changes(self):
         """Preview changes that will be made to XML files"""
         changes = []
+        new_entries = []
         for section in self.aadt_sections:
             if section['calculated_aadt']:
-                changes.append(f"{section['roadway_title']} Section {section['section_num']}: "
-                             f"Sta {self.format_station(section['start_station'])} to "
-                             f"{self.format_station(section['end_station'])} → "
-                             f"AADT {section['calculated_aadt']}")
+                entry = (f"{section['roadway_title']} Section {section['section_num']}: "
+                        f"Sta {self.format_station(section['start_station'])} to "
+                        f"{self.format_station(section['end_station'])} → "
+                        f"AADT {section['calculated_aadt']}")
+                if section.get('is_new', False):
+                    new_entries.append(f"[NEW] {entry}")
+                else:
+                    changes.append(entry)
+        # Combine: new entries first, then updates
+        changes = new_entries + changes
 
         if not changes:
             messagebox.showinfo("No Changes", "No AADT values calculated yet. "
@@ -4973,6 +5440,52 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                                 new_aadt
                             ))
 
+                # Handle new sections (is_new=True) - insert new XML elements
+                new_sections = [s for s in sections if s.get('is_new', False)]
+                if new_sections:
+                    for section in new_sections:
+                        new_aadt = section['calculated_aadt']
+                        if not new_aadt:
+                            continue
+
+                        start_sta = section['start_station']
+                        end_sta = section['end_station']
+                        year = section['year']
+
+                        # Create new XML element text
+                        new_element = (
+                            f'  <AnnualAveDailyTraffic startStation="{start_sta}" endStation="{end_sta}" \n'
+                            f'    adtYear="{year}" adtRate="{new_aadt}" />\n'
+                        )
+
+                        # Find the last AnnualAveDailyTraffic element and insert after it
+                        # Pattern to find end of last AADT element
+                        pattern = r'(<AnnualAveDailyTraffic[^>]*/>\s*\n)(?!.*<AnnualAveDailyTraffic)'
+
+                        # Find all AADT elements and insert after the last one
+                        aadt_matches = list(re.finditer(r'<AnnualAveDailyTraffic[^>]*/>', content))
+                        if aadt_matches:
+                            last_match = aadt_matches[-1]
+                            insert_pos = last_match.end()
+                            # Find the end of the line
+                            while insert_pos < len(content) and content[insert_pos] != '\n':
+                                insert_pos += 1
+                            insert_pos += 1  # Move past the newline
+
+                            content = content[:insert_pos] + new_element + content[insert_pos:]
+                            updated_count += 1
+                            changes_list.append((
+                                section['roadway_title'],
+                                self.format_station(start_sta),
+                                self.format_station(end_sta),
+                                'NEW',
+                                new_aadt
+                            ))
+
+                            # Mark section as no longer new (now in XML)
+                            section['is_new'] = False
+                            section['current_aadt'] = new_aadt
+
                 # Write back if changes were made
                 if content != original_content:
                     with open(xml_file, 'w', encoding='utf-8') as f:
@@ -4981,6 +5494,9 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
             except Exception as e:
                 print(f"Error updating {xml_file}: {e}")
                 error_count += 1
+
+        # Refresh the treeview to update styling (new entries no longer blue/italic)
+        self.filter_aadt_sections_by_year()
 
         self.aadt_apply_status.set(f"Updated {updated_count} AADT values. Errors: {error_count}")
         self.status_var.set(f"AADT update complete: {updated_count} values updated")
@@ -5023,7 +5539,7 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                 headers = ['Roadway_Title', 'Section_Num', 'Start_Station', 'End_Station', 'Year',
                           'Current_AADT', 'ID1', 'Sign1', 'ID2', 'Sign2', 'ID3', 'Sign3',
                           'ID4', 'Sign4', 'ID5', 'Sign5', 'ID6', 'Sign6',
-                          'Calculated_AADT', 'Reviewed', 'Highway_Dir', 'XML_File']
+                          'Calculated_AADT', 'Reviewed', 'Highway_Dir', 'XML_File', 'Is_New']
                 writer.writerow(headers)
 
                 # Data
@@ -5051,7 +5567,8 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                         section['calculated_aadt'],
                         'Yes' if is_reviewed else 'No',
                         section['highway_dir'],
-                        section['xml_file']
+                        section['xml_file'],
+                        'Yes' if section.get('is_new', False) else 'No'
                     ]
                     writer.writerow(row)
 
@@ -5086,29 +5603,32 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                 except:
                     return sta
 
-            # Build lookup from existing scanned sections
+            # Build lookup from existing scanned sections (include year to distinguish multi-year)
             section_lookup = {}
             for i, section in enumerate(self.aadt_sections):
                 key = (
                     section['roadway_title'],
                     normalize_station(section['start_station']),
-                    normalize_station(section['end_station'])
+                    normalize_station(section['end_station']),
+                    section['year']
                 )
                 section_lookup[key] = i
 
             matched_count = 0
             unmatched_rows = []
             reviewed_alignments = set()
+            new_sections_added = 0
 
             with open(file_path, 'r', encoding='utf-8') as f:
                 reader = csv.DictReader(f)
 
                 for row in reader:
-                    # Build key to match with scanned sections
+                    # Build key to match with scanned sections (include year)
                     key = (
                         row.get('Roadway_Title', ''),
                         normalize_station(row.get('Start_Station', '')),
-                        normalize_station(row.get('End_Station', ''))
+                        normalize_station(row.get('End_Station', '')),
+                        row.get('Year', '')
                     )
 
                     if key in section_lookup:
@@ -5131,7 +5651,39 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
                         if row.get('Reviewed', 'No') == 'Yes':
                             reviewed_alignments.add(row.get('Roadway_Title', ''))
                     else:
-                        unmatched_rows.append(f"{row.get('Roadway_Title', '')} @ {row.get('Start_Station', '')}")
+                        # If this is a new year entry that was saved, re-add it
+                        if row.get('Is_New', 'No') == 'Yes':
+                            new_section = {
+                                'roadway_title': row.get('Roadway_Title', ''),
+                                'highway_dir': row.get('Highway_Dir', ''),
+                                'xml_file': row.get('XML_File', ''),
+                                'section_num': int(row.get('Section_Num', 0)),
+                                'start_station': row.get('Start_Station', ''),
+                                'end_station': row.get('End_Station', ''),
+                                'year': row.get('Year', ''),
+                                'current_aadt': row.get('Current_AADT', '1'),
+                                'id1': row.get('ID1', ''),
+                                'id2': row.get('ID2', ''),
+                                'id3': row.get('ID3', ''),
+                                'id4': row.get('ID4', ''),
+                                'id5': row.get('ID5', ''),
+                                'id6': row.get('ID6', ''),
+                                'sign1': row.get('Sign1', '+'),
+                                'sign2': row.get('Sign2', '+'),
+                                'sign3': row.get('Sign3', '+'),
+                                'sign4': row.get('Sign4', '+'),
+                                'sign5': row.get('Sign5', '+'),
+                                'sign6': row.get('Sign6', '+'),
+                                'calculated_aadt': row.get('Calculated_AADT', ''),
+                                'is_new': True
+                            }
+                            self.aadt_sections.append(new_section)
+                            new_sections_added += 1
+                            matched_count += 1
+                            if row.get('Reviewed', 'No') == 'Yes':
+                                reviewed_alignments.add(row.get('Roadway_Title', ''))
+                        else:
+                            unmatched_rows.append(f"{row.get('Roadway_Title', '')} @ {row.get('Start_Station', '')}")
 
             if matched_count == 0:
                 messagebox.showwarning("No Matches",
@@ -5142,62 +5694,33 @@ This will modify the adtRate attribute in each AnnualAveDailyTraffic element."""
             # Update reviewed alignments
             self.aadt_reviewed_alignments = reviewed_alignments
 
-            # Rebuild tree view with loaded data
-            self.aadt_tree.delete(*self.aadt_tree.get_children())
+            # Update years dropdown (in case new years were added)
+            self.aadt_years_in_project = sorted(set(s['year'] for s in self.aadt_sections if s['year']))
+            self.aadt_working_year_combo['values'] = self.aadt_years_in_project
+            if self.aadt_years_in_project and not self.aadt_working_year.get():
+                self.aadt_working_year.set(self.aadt_years_in_project[0])
+            self.aadt_year_status.config(text=f"Years: {', '.join(self.aadt_years_in_project)}", foreground='green')
 
-            # Group sections by roadway_title
-            alignments = {}
-            for i, section in enumerate(self.aadt_sections):
-                title = section['roadway_title']
-                if title not in alignments:
-                    alignments[title] = []
-                alignments[title].append((i, section))
-
-            # Create parent nodes for each alignment and child nodes for sections
-            self.aadt_alignment_nodes = {}
-            for title in sorted(alignments.keys()):
-                sections_list = alignments[title]
-                parent_id = f"align_{title}"
-                section_count = len(sections_list)
-
-                # Tag as reviewed if in reviewed set
-                tags = ('alignment', 'reviewed') if title in reviewed_alignments else ('alignment', 'pending')
-                self.aadt_tree.insert('', 'end', iid=parent_id, text=f"{title} ({section_count} sections)",
-                                     values=('', '', '', '', '', '', ''),
-                                     tags=tags, open=False)
-                self.aadt_alignment_nodes[title] = parent_id
-
-                # Create child nodes for each section
-                for idx, section in sections_list:
-                    id_display = self.get_ids_display(section)
-                    values = (
-                        section['section_num'],
-                        self.format_station(section['start_station']),
-                        self.format_station(section['end_station']),
-                        section['year'],
-                        section['current_aadt'],
-                        id_display,
-                        section['calculated_aadt']
-                    )
-                    self.aadt_tree.insert(parent_id, 'end', iid=str(idx), text='',
-                                         values=values, tags=('pending',))
+            # Rebuild tree view filtered by working year
+            self.filter_aadt_sections_by_year()
 
             # Update checklist
             self.update_aadt_checklist()
 
             section_count = len(self.aadt_sections)
-            align_count = len(alignments)
             reviewed_count = len(reviewed_alignments)
 
-            self.aadt_scan_status.set(f"Merged IDs for {matched_count} sections ({reviewed_count} alignments reviewed)")
+            new_sections_msg = f" ({new_sections_added} new year entries restored)" if new_sections_added > 0 else ""
+            self.aadt_scan_status.set(f"Merged IDs for {matched_count} sections{new_sections_msg}")
             self.status_var.set(f"Loaded forecast IDs from {os.path.basename(file_path)}")
 
             unmatched_msg = ""
             if unmatched_rows:
                 unmatched_msg = f"\n\n{len(unmatched_rows)} rows in CSV did not match scanned sections."
 
+            new_year_msg = f"\n{new_sections_added} new year entries restored." if new_sections_added > 0 else ""
             messagebox.showinfo("Load Complete",
-                              f"Merged forecast IDs for {matched_count} sections.\n"
+                              f"Merged forecast IDs for {matched_count} sections.{new_year_msg}\n"
                               f"{reviewed_count} alignments marked as reviewed.\n"
                               f"Current AADT values preserved from XML scan.{unmatched_msg}\n\n"
                               f"Note: Load the forecast workbook (Step 2) to calculate AADT values.")

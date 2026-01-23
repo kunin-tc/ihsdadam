@@ -350,14 +350,15 @@ def extract_highway_row_data(row, eval_name="", debug=False):
 # INTERSECTION & RAMP TERMINAL EXTRACTION
 # =============================================================================
 
-def extract_by_headers_from_csv(file_path, target_headers, first_file=False, multi_year=True, eval_name=""):
-    """Extract rows from CSV by matching column headers.
+def extract_by_headers_from_csv(file_path, target_headers, first_file=False, target_years=None, eval_name=""):
+    """Extract rows from CSV by matching column headers and filtering by year.
 
     Args:
         file_path: Path to the CSV file
         target_headers: List of headers to extract
         first_file: If True, include header row in output
-        multi_year: If True, extract 20 years of data
+        target_years: List of year strings to extract (e.g., ["2026", "2027", "2028"])
+                     If None, extracts all rows (backwards compatible)
         eval_name: Evaluation name to prepend to each data row
     """
     extracted_rows = []
@@ -372,23 +373,25 @@ def extract_by_headers_from_csv(file_path, target_headers, first_file=False, mul
 
             header_row = lines[5]  # Row 6 (index 5) contains headers
 
-            # Determine rows to extract
-            if multi_year:
-                if first_file:
-                    rows_to_extract = lines[5:26]  # Include header + 20 years
-                else:
-                    rows_to_extract = lines[6:26]  # Skip header, just data
-            else:
-                if first_file:
-                    rows_to_extract = lines[5:7]  # Header + first data row
-                else:
-                    rows_to_extract = [lines[6]]  # Single data row
+            # Find Year column index for filtering
+            year_col_idx = None
+            for idx, header in enumerate(header_row):
+                if header == 'Year':
+                    year_col_idx = idx
+                    break
 
             # Build header index map
             header_index_map = {header: [] for header in target_headers}
             for idx, header in enumerate(header_row):
                 if header in target_headers:
                     header_index_map[header].append(idx)
+
+            # Determine rows to extract (start from row 6, index 5)
+            # Include header row if first_file, then all data rows
+            if first_file:
+                rows_to_extract = lines[5:]  # Include header + all data
+            else:
+                rows_to_extract = lines[6:]  # Skip header, just data
 
             # Extract data
             is_first_row = True
@@ -403,6 +406,12 @@ def extract_by_headers_from_csv(file_path, target_headers, first_file=False, mul
                     continue
                 if row[0] == "" or row[0] == "Type":
                     continue
+
+                # Filter by year if target_years specified (skip header row for year check)
+                if target_years and not is_first_row and year_col_idx is not None:
+                    row_year = row[year_col_idx].strip() if year_col_idx < len(row) else ""
+                    if row_year not in target_years:
+                        continue
 
                 extracted_row = []
                 for header in target_headers:
