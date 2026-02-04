@@ -1692,7 +1692,8 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                             compiler.INTERSECTION_HEADER[1:-1] + ["Fatal and Injury (FI) Crashes"],
                             "USA Intersection Debug Result",
                             first_file=(not all_intersection_rows),
-                            eval_name=eval_name
+                            eval_name=eval_name,
+                            target_years=target_years
                         )
                         if int_rows:
                             all_intersection_rows.extend(int_rows)
@@ -1765,7 +1766,8 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                             compiler.SITESET_INT_HEADER[1:],
                             "USA Intersection Debug Result",
                             first_file=ss_first_int,
-                            eval_name=eval_name
+                            eval_name=eval_name,
+                            target_years=target_years
                         )
                         if int_rows:
                             ss_intersection_rows.extend(int_rows)
@@ -1778,7 +1780,8 @@ View horizontal and vertical alignment profiles for any highway alignment in you
                             compiler.SITESET_RAMP_HEADER[1:],
                             "Ramp Terminal CMF",
                             first_file=ss_first_ramp,
-                            eval_name=eval_name
+                            eval_name=eval_name,
+                            target_years=target_years
                         )
                         if ramp_rows:
                             ss_ramp_rows.extend(ramp_rows)

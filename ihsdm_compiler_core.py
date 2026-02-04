@@ -435,7 +435,7 @@ def extract_by_headers_from_csv(file_path, target_headers, first_file=False, tar
     return extracted_rows
 
 
-def extract_site_set_data(file_path, target_headers, section_marker, first_file=False, eval_name=""):
+def extract_site_set_data(file_path, target_headers, section_marker, first_file=False, eval_name="", target_years=None):
     """Extract data from site set CSV files.
 
     Site set CSVs have multiple sections, each with a marker line like
@@ -447,6 +447,8 @@ def extract_site_set_data(file_path, target_headers, section_marker, first_file=
         section_marker: Marker text to identify sections (e.g., "USA Intersection Debug Result")
         first_file: If True, include header row in output
         eval_name: Evaluation name to prepend to each data row
+        target_years: List of year strings to extract (e.g., ["2026", "2027", "2028"])
+                     If None, extracts all rows (backwards compatible)
 
     Returns:
         List of extracted rows
@@ -475,6 +477,13 @@ def extract_site_set_data(file_path, target_headers, section_marker, first_file=
                             if header in target_headers:
                                 header_index_map[header].append(idx)
 
+                        # Find Year column index for filtering
+                        year_col_idx = None
+                        for idx, header in enumerate(header_row):
+                            if header == 'Year':
+                                year_col_idx = idx
+                                break
+
                         # Include header row if this is first file and we haven't included it yet
                         if include_header:
                             extracted_row = []
@@ -494,6 +503,13 @@ def extract_site_set_data(file_path, target_headers, section_marker, first_file=
 
                             # Skip if empty row
                             if data_row and len(data_row) > 0 and data_row[0] != "":
+                                # Filter by year if target_years specified
+                                if target_years and year_col_idx is not None:
+                                    row_year = data_row[year_col_idx].strip() if year_col_idx < len(data_row) else ""
+                                    if row_year not in target_years:
+                                        i += 3  # Skip this section
+                                        continue
+
                                 extracted_row = []
                                 for header in target_headers:
                                     if header in header_index_map:
