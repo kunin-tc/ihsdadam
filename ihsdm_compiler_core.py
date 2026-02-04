@@ -439,7 +439,8 @@ def extract_site_set_data(file_path, target_headers, section_marker, first_file=
     """Extract data from site set CSV files.
 
     Site set CSVs have multiple sections, each with a marker line like
-    '*************","USA Intersection Debug Result' followed by a header row and data row.
+    '*************","USA Intersection Debug Result' followed by a header row and multiple data rows
+    (one row per year for multi-year evaluations).
 
     Args:
         file_path: Path to the CSV file
@@ -497,30 +498,37 @@ def extract_site_set_data(file_path, target_headers, section_marker, first_file=
                             extracted_rows.append(extracted_row)
                             include_header = False
 
-                        # Extract data row (row after header)
-                        if i + 2 < len(lines):
-                            data_row = lines[i + 2]
+                        # Extract ALL data rows after header (site sets have multiple rows per section, one per year)
+                        data_row_idx = i + 2
+                        while data_row_idx < len(lines):
+                            data_row = lines[data_row_idx]
 
-                            # Skip if empty row
-                            if data_row and len(data_row) > 0 and data_row[0] != "":
-                                # Filter by year if target_years specified
-                                if target_years and year_col_idx is not None:
-                                    row_year = data_row[year_col_idx].strip() if year_col_idx < len(data_row) else ""
-                                    if row_year not in target_years:
-                                        i += 3  # Skip this section
-                                        continue
+                            # Stop if empty row or new section marker
+                            if not data_row or len(data_row) == 0 or data_row[0] == "":
+                                break
+                            if "*************" in str(data_row[0]):
+                                break
 
-                                extracted_row = []
-                                for header in target_headers:
-                                    if header in header_index_map:
-                                        indices = header_index_map[header]
-                                        for idx in indices:
-                                            extracted_row.append(data_row[idx] if idx < len(data_row) else "")
-                                # Prepend evaluation name to data row
-                                extracted_row = [eval_name] + extracted_row
-                                extracted_rows.append(extracted_row)
+                            # Filter by year if target_years specified
+                            if target_years and year_col_idx is not None:
+                                row_year = data_row[year_col_idx].strip() if year_col_idx < len(data_row) else ""
+                                if row_year not in target_years:
+                                    data_row_idx += 1
+                                    continue
 
-                        i += 3  # Skip marker, header, and data rows
+                            extracted_row = []
+                            for header in target_headers:
+                                if header in header_index_map:
+                                    indices = header_index_map[header]
+                                    for idx in indices:
+                                        extracted_row.append(data_row[idx] if idx < len(data_row) else "")
+                            # Prepend evaluation name to data row
+                            extracted_row = [eval_name] + extracted_row
+                            extracted_rows.append(extracted_row)
+
+                            data_row_idx += 1
+
+                        i = data_row_idx  # Move past all data rows we just processed
                         continue
 
                 i += 1
