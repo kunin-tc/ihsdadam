@@ -3,6 +3,7 @@
 
 # Except these files
 !.gitignore
-!ihsdm_wisconsin_helper.py
+!ihsdm_wisconsin_helper_qt.py
 !ihsdm_compiler_core.py
 !version.py
+!IHSDadaM_Qt.spec
