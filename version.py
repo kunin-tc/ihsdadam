@@ -1,9 +1,9 @@
 """Version information for IHSDadaM"""
 
-__version__ = "1.4.2"
+__version__ = "2.0.1"
 __app_name__ = "IHSDadaM"
-__author__ = "Adam Engbring"
-__email__ = "aengbring@hntb.com"
+__author__ = "HNTB WI Traffic Group"
+__email__ = ""
 
 # GitHub repository info for update checking
 GITHUB_USER = "kunin-tc"  # Change this to your GitHub username!

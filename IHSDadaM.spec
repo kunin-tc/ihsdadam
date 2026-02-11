@@ -1,9 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
 from PyInstaller.utils.hooks import collect_all
 
-datas = [('version.py', '.'), ('ihsdm_compiler_core.py', '.'), ('src/ihsdadam', 'ihsdadam')]
+datas = [
+    ('version.py', '.'),
+    ('ihsdm_compiler_core.py', '.'),
+    ('src/ihsdadam', 'ihsdadam'),
+]
 binaries = []
-hiddenimports = ['PySide6', 'PySide6.QtWidgets', 'PySide6.QtCore', 'PySide6.QtGui', 'openpyxl', 'openpyxl.cell', 'openpyxl.styles', 'openpyxl.workbook', 'openpyxl.worksheet', 'PyPDF2']
+hiddenimports = [
+    'openpyxl', 'openpyxl.cell', 'openpyxl.styles',
+    'openpyxl.workbook', 'openpyxl.worksheet',
+    'PyPDF2',
+    'PySide6.QtWidgets', 'PySide6.QtCore', 'PySide6.QtGui',
+]
 tmp_ret = collect_all('openpyxl')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('PyPDF2')
@@ -14,7 +23,7 @@ datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 
 a = Analysis(
     ['main.py'],
-    pathex=[],
+    pathex=['src'],
     binaries=binaries,
     datas=datas,
     hiddenimports=hiddenimports,
@@ -33,7 +42,7 @@ exe = EXE(
     a.binaries,
     a.datas,
     [],
-    name='IHSDadaM_Qt',
+    name='IHSDadaM',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
@@ -46,5 +55,5 @@ exe = EXE(
     target_arch=None,
     codesign_identity=None,
     entitlements_file=None,
-    icon='NONE',
+    icon='ihsdadam.ico',
 )

@@ -3,7 +3,22 @@
 
 # Except these files
 !.gitignore
-!ihsdm_wisconsin_helper_qt.py
+!CLAUDE.md
+!README.md
+!main.py
 !ihsdm_compiler_core.py
 !version.py
-!IHSDadaM_Qt.spec
+!IHSDadaM.spec
+!requirements.txt
+
+# Source package
+!src/
+!src/ihsdadam/
+!src/ihsdadam/**
+!src/ihsdadam/**/*
+__pycache__/
+*.pyc
+
+# Assets
+!ihsdadam.ico
+!HNTB_Logo.svg

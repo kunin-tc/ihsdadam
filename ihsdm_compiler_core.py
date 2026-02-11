@@ -85,6 +85,12 @@ RAMP_TERMINAL_HEADER = ["Evaluation Name", "Ramp Terminal #", "Ramp Terminal Typ
                         "Non-Incapacitating Injury (B) Crashes", "Possible Injury (C) Crashes",
                         "No Injury (O) Crashes", "Fatal and Injury (FI) Crashes"]
 
+# Roundabout headers - same structure as intersection but "Roundabout Type" matches CSV column name
+ROUNDABOUT_HEADER = ["Evaluation Name", "Inter. #", "Roundabout Type", "Title", "Year", "Major AADT", "Minor AADT",
+                     "Fatal (K) Crashes", "Incapacitating Injury (A) Crashes",
+                     "Non-Incapacitating Injury (B) Crashes", "Possible Injury (C) Crashes",
+                     "No Injury (O) Crashes", "Fatal and Injury (FI) Crashes"]
+
 # Site set headers - use Calibrated FI as the FI source for KABC calculation
 SITESET_INT_HEADER = ["Evaluation Name", "Inter. #", "Intersection Type", "Title", "Year", "Major AADT", "Minor AADT",
                       "Fatal (K) Crashes", "Incapacitating Injury (A) Crashes",
@@ -95,6 +101,11 @@ SITESET_RAMP_HEADER = ["Evaluation Name", "Ramp Terminal #", "Ramp Terminal Type
                        "Fatal (K) Crashes", "Incapacitating Injury (A) Crashes",
                        "Non-Incapacitating Injury (B) Crashes", "Possible Injury (C) Crashes",
                        "No Injury (O) Crashes", "Calibrated FI Predicted Crashes Per Year"]
+
+SITESET_ROUNDABOUT_HEADER = ["Evaluation Name", "Inter. #", "Roundabout Type", "Title", "Year", "Major AADT", "Minor AADT",
+                             "Fatal (K) Crashes", "Incapacitating Injury (A) Crashes",
+                             "Non-Incapacitating Injury (B) Crashes", "Possible Injury (C) Crashes",
+                             "No Injury (O) Crashes", "Calibrated FI Predicted Crashes Per Year"]
 
 
 # =============================================================================
@@ -153,6 +164,77 @@ def deduplicate_by_title(rows, title_column_index=3):
             # Keep rows that don't have enough columns (header rows, etc.)
             unique_rows.append(row)
     return unique_rows
+
+
+def average_freeway_pairs(rows):
+    """Average freeway segment pairs for odd-lane configurations.
+
+    IHSDM cannot directly model 5F, 7F, or 9F freeways. Instead it runs both
+    adjacent even-lane configs (e.g., 4F + 6F for a 5-lane freeway) and the
+    results need to be averaged. Both results appear in the output and are
+    detected by matching Start_Location (index 5) and Year (index 3) for
+    segments whose Type (index 6) ends with "F".
+
+    Args:
+        rows: List of highway data rows (with Evaluation Name at index 0)
+
+    Returns:
+        Tuple of (processed_rows, pair_count) where pair_count is how many
+        pairs were averaged.
+    """
+    freeway_rows = []
+    other_rows = []
+    for row in rows:
+        if len(row) > 6 and isinstance(row[6], str) and row[6].endswith("F"):
+            freeway_rows.append(row)
+        else:
+            other_rows.append(row)
+
+    if not freeway_rows:
+        return rows, 0
+
+    # Group by (Segment, Start_Location, Year) -- EvalName excluded because
+    # paired evaluations have different names (e.g., "4F Eval" vs "6F Eval")
+    groups = {}
+    for row in freeway_rows:
+        key = (str(row[1]).strip(), str(row[5]).strip(), str(row[3]).strip())
+        if key not in groups:
+            groups[key] = []
+        groups[key].append(row)
+
+    averaged_rows = []
+    pair_count = 0
+    for key, group in groups.items():
+        if len(group) == 2:
+            row_a, row_b = group
+            merged = list(row_a)
+
+            # Compute averaged type: "4F" + "6F" -> "5F"
+            try:
+                num_a = int("".join(c for c in row_a[6] if c.isdigit()))
+                num_b = int("".join(c for c in row_b[6] if c.isdigit()))
+                avg_num = (num_a + num_b) // 2
+                merged[6] = f"{avg_num}F"
+            except (ValueError, IndexError):
+                pass
+
+            # Average numeric values from index 7 onward (length + crash values)
+            min_len = min(len(row_a), len(row_b))
+            for i in range(7, min_len):
+                try:
+                    val_a = float(str(row_a[i]).replace(",", "")) if row_a[i] not in (None, "") else 0.0
+                    val_b = float(str(row_b[i]).replace(",", "")) if row_b[i] not in (None, "") else 0.0
+                    merged[i] = (val_a + val_b) / 2
+                except (ValueError, TypeError):
+                    pass
+
+            averaged_rows.append(merged)
+            pair_count += 1
+        else:
+            # Single row or >2 matches - pass through unchanged
+            averaged_rows.extend(group)
+
+    return other_rows + averaged_rows, pair_count
 
 
 # =============================================================================
@@ -415,10 +497,26 @@ def extract_by_headers_from_csv(file_path, target_headers, first_file=False, tar
 
                 extracted_row = []
                 for header in target_headers:
-                    if header in header_index_map:
-                        indices = header_index_map[header]
-                        for idx in indices:
-                            extracted_row.append(row[idx] if idx < len(row) else "")
+                    indices = header_index_map.get(header, [])
+                    if indices:
+                        # Take last non-empty value when header appears
+                        # multiple times (e.g., duplicate "No Injury (O)")
+                        if first_file and is_first_row:
+                            extracted_row.append(row[indices[0]] if indices[0] < len(row) else header)
+                        else:
+                            val = ""
+                            for idx in indices:
+                                cell_val = row[idx] if idx < len(row) else ""
+                                if cell_val:
+                                    val = cell_val
+                            extracted_row.append(val)
+                    else:
+                        # Header not found in CSV - append placeholder to
+                        # maintain column alignment
+                        if first_file and is_first_row:
+                            extracted_row.append(header)
+                        else:
+                            extracted_row.append("")
 
                 # Prepend "Evaluation Name" header text for first row (header),
                 # or actual eval_name value for data rows
@@ -489,10 +587,11 @@ def extract_site_set_data(file_path, target_headers, section_marker, first_file=
                         if include_header:
                             extracted_row = []
                             for header in target_headers:
-                                if header in header_index_map:
-                                    indices = header_index_map[header]
-                                    for idx in indices:
-                                        extracted_row.append(header_row[idx] if idx < len(header_row) else "")
+                                indices = header_index_map.get(header, [])
+                                if indices:
+                                    extracted_row.append(header_row[indices[0]] if indices[0] < len(header_row) else header)
+                                else:
+                                    extracted_row.append(header)
                             # Prepend "Evaluation Name" header text to header row
                             extracted_row = ["Evaluation Name"] + extracted_row
                             extracted_rows.append(extracted_row)
@@ -518,10 +617,16 @@ def extract_site_set_data(file_path, target_headers, section_marker, first_file=
 
                             extracted_row = []
                             for header in target_headers:
-                                if header in header_index_map:
-                                    indices = header_index_map[header]
+                                indices = header_index_map.get(header, [])
+                                if indices:
+                                    val = ""
                                     for idx in indices:
-                                        extracted_row.append(data_row[idx] if idx < len(data_row) else "")
+                                        cell_val = data_row[idx] if idx < len(data_row) else ""
+                                        if cell_val:
+                                            val = cell_val
+                                    extracted_row.append(val)
+                                else:
+                                    extracted_row.append("")
                             # Prepend evaluation name to data row
                             extracted_row = [eval_name] + extracted_row
                             extracted_rows.append(extracted_row)
@@ -553,7 +658,7 @@ def scan_site_set_sections(file_path):
     }
 
     # Known section markers
-    known_intersection_markers = ["USA Intersection Debug Result"]
+    known_intersection_markers = ["USA Intersection Debug Result", "RML Intersection Debug Result", "Roundabout Debug Result"]
     known_ramp_markers = ["Ramp Terminal CMF"]
     # These are category headers, not data sections
     ignore_markers = ["Urban/Suburban Arterial", "Freeway Ramp Terminal", "Rural Two-Lane",
@@ -587,7 +692,7 @@ def scan_site_set_sections(file_path):
     return sections
 
 
-def extract_unknown_site_set_sections(file_path, known_markers):
+def extract_unknown_site_set_sections(file_path, known_markers, target_years=None):
     """Extract data from unknown section types in site set CSV.
 
     Attempts to extract any section that isn't in known_markers list.
@@ -596,6 +701,8 @@ def extract_unknown_site_set_sections(file_path, known_markers):
     Args:
         file_path: Path to CSV file
         known_markers: List of section markers to skip (already handled)
+        target_years: List of year strings to filter by (e.g., ["2026", "2027"]).
+                      If None, extracts all rows (backwards compatible).
 
     Returns:
         List of tuples: [(section_name, header_row, data_rows), ...]
@@ -628,6 +735,14 @@ def extract_unknown_site_set_sections(file_path, known_markers):
                     if i + 1 < len(lines):
                         header_row = lines[i + 1]
 
+                        # Find Year column index for filtering
+                        year_col_idx = None
+                        if target_years:
+                            for idx, col in enumerate(header_row):
+                                if col.strip() == "Year":
+                                    year_col_idx = idx
+                                    break
+
                         # Collect data rows until next marker or empty row
                         data_rows = []
                         j = i + 2
@@ -640,6 +755,14 @@ def extract_unknown_site_set_sections(file_path, known_markers):
                                 break
                             if data_row[0] == "":
                                 break
+
+                            # Filter by year if target_years specified
+                            if target_years and year_col_idx is not None:
+                                row_year = data_row[year_col_idx].strip() if year_col_idx < len(data_row) else ""
+                                if row_year not in target_years:
+                                    j += 1
+                                    continue
+
                             data_rows.append(data_row)
                             j += 1
 
@@ -736,93 +859,149 @@ def fill_missing_highway_values(excel_path):
 
 
 def fill_missing_intersection_values(excel_path, sheet_name="Intersection"):
-    """Apply intersection severity distributions."""
+    """Apply intersection severity distributions when KABC are missing.
+
+    Only used as a fallback when severity distributions were not available
+    through calibration factors.  Finds columns by header name so it works
+    regardless of whether a duplicate O column exists.
+    """
     try:
         workbook = load_workbook(excel_path)
 
-        if sheet_name in workbook.sheetnames:
-            sheet = workbook[sheet_name]
-            for row in sheet.iter_rows(min_row=2):
-                if len(row) > 13:
-                    # Column indices shifted by 1 due to "Evaluation Name" in column 0
-                    cell_f = row[6]   # Minor AADT
-                    cell_g = row[7]   # Fatal (K)
-                    cell_h = row[8]   # Incapacitating (A)
-                    cell_i = row[9]   # Non-Incapacitating (B)
-                    cell_j = row[10]  # Possible (C)
-                    cell_k = row[11]  # No Injury (O)
-                    cell_l = row[12]  # No Injury (O) duplicate
-                    cell_m = row[13]  # FI
+        if sheet_name not in workbook.sheetnames:
+            return
 
-                    if cell_f.value and cell_l.value:
-                        l_value = float(cell_l.value)
-                        m_value = float(cell_m.value)
+        sheet = workbook[sheet_name]
 
-                        if not cell_g.value:
-                            cell_g.value = m_value * INT_SEVERITY_K
-                        if not cell_h.value:
-                            cell_h.value = m_value * INT_SEVERITY_A
-                        if not cell_i.value:
-                            cell_i.value = m_value * INT_SEVERITY_B
-                        if not cell_j.value:
-                            cell_j.value = m_value * INT_SEVERITY_C
+        # Find column indices from header row (row 1)
+        headers = {cell.value: cell.column - 1 for cell in sheet[1] if cell.value}
+        k_idx = headers.get("Fatal (K) Crashes")
+        a_idx = headers.get("Incapacitating Injury (A) Crashes")
+        b_idx = headers.get("Non-Incapacitating Injury (B) Crashes")
+        c_idx = headers.get("Possible Injury (C) Crashes")
+        fi_idx = headers.get("Fatal and Injury (FI) Crashes")
+        if fi_idx is None:
+            fi_idx = headers.get("Calibrated FI Predicted Crashes Per Year")
 
-                        if not cell_k.value:
-                            cell_k.value = l_value
+        # Find O columns (may appear twice — first is primary, second is duplicate)
+        o_indices = [cell.column - 1 for cell in sheet[1]
+                     if cell.value and "No Injury (O)" in str(cell.value)]
+        o_primary = o_indices[0] if o_indices else None
+        o_dup = o_indices[1] if len(o_indices) > 1 else None
 
-            workbook.save(excel_path)
+        if fi_idx is None:
+            workbook.close()
+            return
+
+        for row in sheet.iter_rows(min_row=2):
+            ncols = len(row)
+            fi_cell = row[fi_idx] if fi_idx < ncols else None
+            if fi_cell and fi_cell.value:
+                try:
+                    fi_value = float(str(fi_cell.value).replace(",", ""))
+                except (ValueError, TypeError):
+                    continue
+
+                if k_idx is not None and k_idx < ncols and not row[k_idx].value:
+                    row[k_idx].value = fi_value * INT_SEVERITY_K
+                if a_idx is not None and a_idx < ncols and not row[a_idx].value:
+                    row[a_idx].value = fi_value * INT_SEVERITY_A
+                if b_idx is not None and b_idx < ncols and not row[b_idx].value:
+                    row[b_idx].value = fi_value * INT_SEVERITY_B
+                if c_idx is not None and c_idx < ncols and not row[c_idx].value:
+                    row[c_idx].value = fi_value * INT_SEVERITY_C
+
+            # Copy duplicate O to primary O if needed
+            if o_dup is not None and o_primary is not None and o_dup < ncols and o_primary < ncols:
+                if row[o_dup].value and not row[o_primary].value:
+                    row[o_primary].value = row[o_dup].value
+
+        workbook.save(excel_path)
 
     except Exception as e:
         print(f"Error filling intersection values: {e}")
 
 
 def fill_missing_ramp_terminal_values(excel_path, sheet_name="RampTerminal"):
-    """Apply severity distributions to ramp terminals."""
+    """Apply severity distributions to ramp terminals.  Header-aware."""
     try:
         workbook = load_workbook(excel_path)
 
-        if sheet_name in workbook.sheetnames:
-            sheet = workbook[sheet_name]
-            for row in sheet.iter_rows(min_row=2):
-                if len(row) > 12:
-                    # Column indices shifted by 1 due to "Evaluation Name" in column 0
-                    cell_k = row[7]
-                    cell_a = row[8]
-                    cell_b = row[9]
-                    cell_c = row[10]
-                    cell_o = row[11]
-                    cell_fi = row[12]
+        if sheet_name not in workbook.sheetnames:
+            return
 
-                    if cell_fi.value:
-                        fi_value = float(cell_fi.value)
+        sheet = workbook[sheet_name]
+        headers = {cell.value: cell.column - 1 for cell in sheet[1] if cell.value}
+        k_idx = headers.get("Fatal (K) Crashes")
+        a_idx = headers.get("Incapacitating Injury (A) Crashes")
+        b_idx = headers.get("Non-Incapacitating Injury (B) Crashes")
+        c_idx = headers.get("Possible Injury (C) Crashes")
+        fi_idx = headers.get("Fatal and Injury (FI) Crashes")
+        if fi_idx is None:
+            fi_idx = headers.get("Calibrated FI Predicted Crashes Per Year")
 
-                        if not cell_k.value:
-                            cell_k.value = fi_value * INT_SEVERITY_K
-                        if not cell_a.value:
-                            cell_a.value = fi_value * INT_SEVERITY_A
-                        if not cell_b.value:
-                            cell_b.value = fi_value * INT_SEVERITY_B
-                        if not cell_c.value:
-                            cell_c.value = fi_value * INT_SEVERITY_C
+        if fi_idx is None:
+            workbook.close()
+            return
 
-            workbook.save(excel_path)
+        for row in sheet.iter_rows(min_row=2):
+            ncols = len(row)
+            fi_cell = row[fi_idx] if fi_idx < ncols else None
+            if fi_cell and fi_cell.value:
+                try:
+                    fi_value = float(str(fi_cell.value).replace(",", ""))
+                except (ValueError, TypeError):
+                    continue
+
+                if k_idx is not None and k_idx < ncols and not row[k_idx].value:
+                    row[k_idx].value = fi_value * INT_SEVERITY_K
+                if a_idx is not None and a_idx < ncols and not row[a_idx].value:
+                    row[a_idx].value = fi_value * INT_SEVERITY_A
+                if b_idx is not None and b_idx < ncols and not row[b_idx].value:
+                    row[b_idx].value = fi_value * INT_SEVERITY_B
+                if c_idx is not None and c_idx < ncols and not row[c_idx].value:
+                    row[c_idx].value = fi_value * INT_SEVERITY_C
+
+        workbook.save(excel_path)
 
     except Exception as e:
         print(f"Error filling ramp terminal values: {e}")
 
 
 def scrub_duplicate_columns(excel_path, sheet_name):
-    """Remove duplicate columns from intersection/ramp sheets."""
+    """Remove duplicate O columns and the FI source column after fill.
+
+    Scans the header row for duplicate 'No Injury (O) Crashes' columns
+    and the 'Fatal and Injury (FI) Crashes' / 'Calibrated FI' column,
+    then deletes them in reverse order so indices stay valid.
+    """
     try:
         workbook = load_workbook(excel_path)
 
-        if sheet_name in workbook.sheetnames:
-            sheet = workbook[sheet_name]
-            # Delete columns 16, 15, 14, 13 (reverse order)
-            # Column indices shifted by 1 due to "Evaluation Name" in column 1
-            for col in range(16, 12, -1):
-                sheet.delete_cols(col)
-            workbook.save(excel_path)
+        if sheet_name not in workbook.sheetnames:
+            return
+
+        sheet = workbook[sheet_name]
+        headers = [(cell.column, cell.value) for cell in sheet[1] if cell.value]
+
+        cols_to_delete = []
+
+        # Find duplicate O columns (keep first, delete rest)
+        o_cols = [col for col, val in headers if "No Injury (O)" in str(val)]
+        if len(o_cols) > 1:
+            cols_to_delete.extend(o_cols[1:])  # keep first O, delete duplicates
+
+        # Find FI source column (no longer needed after severity fill)
+        for col, val in headers:
+            if val in ("Fatal and Injury (FI) Crashes",
+                       "Calibrated FI Predicted Crashes Per Year"):
+                cols_to_delete.append(col)
+
+        # Delete in reverse order so column indices stay valid
+        for col in sorted(set(cols_to_delete), reverse=True):
+            sheet.delete_cols(col)
+
+        workbook.save(excel_path)
 
     except Exception as e:
         print(f"Error scrubbing columns in {sheet_name}: {e}")

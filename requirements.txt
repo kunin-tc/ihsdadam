@@ -1,0 +1,41 @@
+# Requirements for IHSDadaM v1.0
+# Comprehensive tool for IHSDM project analysis
+
+# Core Python Standard Library (included with Python):
+# - tkinter (GUI)
+# - xml.etree.ElementTree (XML parsing)
+# - pathlib (file paths)
+# - csv (CSV files)
+# - os, collections, dataclasses
+
+# REQUIRED EXTERNAL LIBRARIES:
+# For Data Compiler functionality (Excel export)
+openpyxl>=3.0.0
+
+# For Appendix Generator (PDF merging)
+PyPDF2>=3.0.0
+
+# Optional: For creating standalone executable
+pyinstaller>=5.0
+
+# Installation Instructions:
+# ========================
+#
+# OPTION 1 - Install all at once:
+#   pip install -r requirements.txt
+#
+# OPTION 2 - Install individually:
+#   pip install openpyxl
+#   pip install PyPDF2
+#   pip install pyinstaller  (only if building .exe)
+#
+# Verification:
+#   python -c "import openpyxl; print('openpyxl installed:', openpyxl.__version__)"
+#   python -c "import PyPDF2; print('PyPDF2 installed:', PyPDF2.__version__)"
+#
+# Notes:
+# - openpyxl is REQUIRED for Data Compiler tab to work
+# - PyPDF2 is REQUIRED for Appendix Generator tab to work
+# - Visual View uses Tkinter Canvas (no external libraries needed)
+# - PyInstaller is only needed if you want to create standalone .exe
+# - All other dependencies are Python standard library (no install needed)
